@@ -15,32 +15,12 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
+import { 
+  STANDARD_CURRICULUM_SUBJECTS, 
+  seedStandardCurriculumForSchool 
+} from '../../services/schoolService';
 
-export const STANDARD_CURRICULUM_SUBJECTS = [
-  { name: 'Mathematics', code: 'MTH', category: 'Core' },
-  { name: 'English Language', code: 'ENG', category: 'Core' },
-  { name: 'Basic Science & Technology', code: 'BST', category: 'Sciences' },
-  { name: 'Social Studies', code: 'SOS', category: 'Humanities' },
-  { name: 'Civic Education', code: 'CIV', category: 'Core' },
-  { name: 'Agricultural Science', code: 'AGR', category: 'Sciences' },
-  { name: 'Information & Communication Technology', code: 'ICT', category: 'Sciences' },
-  { name: 'Christian Religious Studies', code: 'CRS', category: 'Humanities' },
-  { name: 'Islamic Religious Studies', code: 'IRS', category: 'Humanities' },
-  { name: 'Physical & Health Education', code: 'PHE', category: 'General' },
-  { name: 'Cultural & Creative Arts', code: 'CCA', category: 'Humanities' },
-  { name: 'Business Studies', code: 'BUS', category: 'Commercial' },
-  { name: 'Home Economics', code: 'HEC', category: 'Vocational' },
-  { name: 'Biology', code: 'BIO', category: 'Sciences' },
-  { name: 'Chemistry', code: 'CHM', category: 'Sciences' },
-  { name: 'Physics', code: 'PHY', category: 'Sciences' },
-  { name: 'Economics', code: 'ECO', category: 'Commercial' },
-  { name: 'Government', code: 'GOV', category: 'Humanities' },
-  { name: 'Literature in English', code: 'LIT', category: 'Humanities' },
-  { name: 'French Language', code: 'FRE', category: 'Languages' },
-  { name: 'Yoruba Language', code: 'YOR', category: 'Languages' },
-  { name: 'Hausa Language', code: 'HAU', category: 'Languages' },
-  { name: 'Igbo Language', code: 'IGB', category: 'Languages' },
-];
+export { STANDARD_CURRICULUM_SUBJECTS };
 
 const CATEGORIES = [
   'All',
@@ -125,7 +105,7 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
 
   useEffect(() => {
     fetchSubjectsAndTeachers();
-  }, []);
+  }, [schoolId]);
 
   const openAddModal = () => {
     setEditingSubject(null);
@@ -171,9 +151,10 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
     setSaving(true);
     setFormError('');
     try {
-      const subId = editingSubject?.subjectId || `sub-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`;
-      const docRef = doc(db, 'subjects', subId);
       const targetSchoolId = editingSubject?.schoolId || schoolId || 'bistoland';
+      const cleanSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+      const subId = editingSubject?.subjectId || (targetSchoolId === 'bistoland' ? `sub-${cleanSlug}` : `sub-${targetSchoolId}-${cleanSlug}`);
+      const docRef = doc(db, 'subjects', subId);
 
       const payload: Partial<Subject> = {
         subjectId: subId,
@@ -269,44 +250,25 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
     setSeeding(true);
     setSeedSuccess('');
     try {
-      let count = 0;
-      const existingIds = new Set(subjects.map(s => s.subjectId));
-      const existingNames = new Set(subjects.map(s => s.name.toLowerCase()));
       const targetSchoolId = schoolId || 'bistoland';
-
-      for (const item of STANDARD_CURRICULUM_SUBJECTS) {
-        const subId = `sub-${item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`;
-        if (!existingIds.has(subId) && !existingNames.has(item.name.toLowerCase())) {
-          const docRef = doc(db, 'subjects', subId);
-          await setDoc(docRef, {
-            subjectId: subId,
-            schoolId: targetSchoolId,
-            name: item.name,
-            code: item.code,
-            category: item.category,
-            active: true,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-          count++;
-        }
-      }
+      const result = await seedStandardCurriculumForSchool(targetSchoolId);
 
       await logAudit(
         currentUser?.uid || 'admin',
         'SUBJECT_SEEDED',
         'subjects',
         'batch',
-        `Seeded ${count} standard curriculum subjects`,
+        `Seeded ${result.count} standard curriculum subjects`,
         targetSchoolId
       );
 
-      setSeedSuccess(`Successfully added ${count} standard subjects.`);
+      setSeedSuccess(`Successfully loaded ${result.count} standard curriculum subjects.`);
       await fetchSubjectsAndTeachers();
       if (onSubjectsUpdated) onSubjectsUpdated();
       setTimeout(() => setSeedSuccess(''), 4000);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error seeding subjects:', err);
+      alert(err.message || 'Failed to load standard curriculum subjects.');
     } finally {
       setSeeding(false);
     }

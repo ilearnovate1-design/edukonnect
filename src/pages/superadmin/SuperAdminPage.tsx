@@ -24,7 +24,8 @@ import {
   saveSchoolSettings, 
   mapDomainToSchool, 
   removeDomainMapping,
-  deleteSchool
+  deleteSchool,
+  seedStandardCurriculumForSchool
 } from '../../services/schoolService';
 import { purgeAllPlatformData } from '../../services/maintenanceService';
 import { Card, CardBody, CardHeader } from '../../components/common/Card';
@@ -108,6 +109,12 @@ export const SuperAdminPage: React.FC = () => {
         schoolId: slug
       }, slug);
       
+      try {
+        await seedStandardCurriculumForSchool(slug);
+      } catch (seedErr) {
+        console.warn('Auto-seed standard subjects notice:', seedErr);
+      }
+
       setShowAddModal(false);
       setNewSchoolName('');
       setNewSchoolId('');

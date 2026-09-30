@@ -7,7 +7,7 @@ import { School, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../services/firebase';
-import { saveSchoolSettings } from '../../services/schoolService';
+import { saveSchoolSettings, seedStandardCurriculumForSchool } from '../../services/schoolService';
 
 export const InitialSetupPage: React.FC<{ onComplete: () => void }> = ({ onComplete }) => {
   const { reloadSettings } = useSchool();
@@ -37,7 +37,14 @@ export const InitialSetupPage: React.FC<{ onComplete: () => void }> = ({ onCompl
         currentTerm: term,
       }, slug);
 
-      // 2. Update user status and schoolId
+      // 2. Auto-seed standard curriculum subjects for the new school
+      try {
+        await seedStandardCurriculumForSchool(slug);
+      } catch (seedErr) {
+        console.warn('Auto-seed standard subjects notice:', seedErr);
+      }
+
+      // 3. Update user status and schoolId
       if (currentUser) {
         const userRef = doc(db, 'users', currentUser.uid);
         await updateDoc(userRef, {

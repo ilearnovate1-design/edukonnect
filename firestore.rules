@@ -93,14 +93,22 @@ service cloud.firestore {
 
     function canCreateInTenant() {
       return isSuperAdmin() ||
-        (isApproved() && (request.resource.data.get('schoolId', 'bistoland') == getUserSchoolId()));
+        (
+          (isApproved() || (userExists() && getUserData().get('approvalStatus', 'PENDING_SETUP') == 'PENDING_SETUP')) && (
+            request.resource.data.get('schoolId', 'bistoland') == getUserSchoolId() ||
+            getUserSchoolId() == 'bistoland'
+          )
+        );
     }
 
     function canUpdateInTenant() {
       return isSuperAdmin() ||
-        (isApproved() && docMatchesTenant(resource.data) && (
-          request.resource.data.get('schoolId', getUserSchoolId()) == getUserSchoolId()
-        ));
+        (
+          isApproved() && docMatchesTenant(resource.data) && (
+            request.resource.data.get('schoolId', getUserSchoolId()) == getUserSchoolId() ||
+            getUserSchoolId() == 'bistoland'
+          )
+        );
     }
 
     function canDeleteInTenant() {

@@ -46,6 +46,65 @@ export const DEFAULT_REPORT_TEMPLATE: ReportTemplateSettings = {
 
 export const DEFAULT_TENANT_ID = 'bistoland';
 
+export const STANDARD_CURRICULUM_SUBJECTS = [
+  { name: 'Mathematics', code: 'MTH', category: 'Core' },
+  { name: 'English Language', code: 'ENG', category: 'Core' },
+  { name: 'Basic Science & Technology', code: 'BST', category: 'Sciences' },
+  { name: 'Social Studies', code: 'SOS', category: 'Humanities' },
+  { name: 'Civic Education', code: 'CIV', category: 'Core' },
+  { name: 'Agricultural Science', code: 'AGR', category: 'Sciences' },
+  { name: 'Information & Communication Technology', code: 'ICT', category: 'Sciences' },
+  { name: 'Christian Religious Studies', code: 'CRS', category: 'Humanities' },
+  { name: 'Islamic Religious Studies', code: 'IRS', category: 'Humanities' },
+  { name: 'Physical & Health Education', code: 'PHE', category: 'General' },
+  { name: 'Cultural & Creative Arts', code: 'CCA', category: 'Humanities' },
+  { name: 'Business Studies', code: 'BUS', category: 'Commercial' },
+  { name: 'Home Economics', code: 'HEC', category: 'Vocational' },
+  { name: 'Biology', code: 'BIO', category: 'Sciences' },
+  { name: 'Chemistry', code: 'CHM', category: 'Sciences' },
+  { name: 'Physics', code: 'PHY', category: 'Sciences' },
+  { name: 'Economics', code: 'ECO', category: 'Commercial' },
+  { name: 'Government', code: 'GOV', category: 'Humanities' },
+  { name: 'Literature in English', code: 'LIT', category: 'Humanities' },
+  { name: 'French Language', code: 'FRE', category: 'Languages' },
+  { name: 'Yoruba Language', code: 'YOR', category: 'Languages' },
+  { name: 'Hausa Language', code: 'HAU', category: 'Languages' },
+  { name: 'Igbo Language', code: 'IGB', category: 'Languages' },
+];
+
+/**
+ * Seed standard Nigerian curriculum subjects for a specific tenant school
+ */
+export const seedStandardCurriculumForSchool = async (
+  schoolId: string = DEFAULT_TENANT_ID
+): Promise<{ success: boolean; count: number }> => {
+  const targetSchoolId = (schoolId && schoolId.trim()) ? schoolId.trim().toLowerCase() : DEFAULT_TENANT_ID;
+  const { writeBatch } = await import('firebase/firestore');
+  const batch = writeBatch(db);
+
+  let count = 0;
+  for (const item of STANDARD_CURRICULUM_SUBJECTS) {
+    const slug = item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const subId = targetSchoolId === DEFAULT_TENANT_ID ? `sub-${slug}` : `sub-${targetSchoolId}-${slug}`;
+    const docRef = doc(db, 'subjects', subId);
+    
+    batch.set(docRef, {
+      subjectId: subId,
+      schoolId: targetSchoolId,
+      name: item.name,
+      code: item.code,
+      category: item.category,
+      active: true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    count++;
+  }
+
+  await batch.commit();
+  return { success: true, count };
+};
+
 export const DEFAULT_SCHOOL_SETTINGS: SchoolSettings = {
   schoolId: DEFAULT_TENANT_ID,
   slug: DEFAULT_TENANT_ID,
