@@ -1,0 +1,84 @@
+{
+  "entities": {
+    "PlatformUsage": {
+      "title": "Platform Usage",
+      "description": "Daily aggregate of platform-wide usage metrics.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "description": "ISO date YYYY-MM-DD" },
+        "totalSchools": { "type": "integer" },
+        "activeSchools": { "type": "integer" },
+        "totalStudents": { "type": "integer" },
+        "totalUsers": { "type": "integer" },
+        "firestoreReads": { "type": "integer" },
+        "firestoreWrites": { "type": "integer" },
+        "firestoreDeletes": { "type": "integer" },
+        "storageBytes": { "type": "integer" },
+        "appActivity": {
+          "type": "object",
+          "properties": {
+            "studentsAdded": { "type": "integer" },
+            "attendanceRecords": { "type": "integer" },
+            "paymentsRecorded": { "type": "integer" },
+            "resultsPublished": { "type": "integer" },
+            "assignmentsCreated": { "type": "integer" },
+            "announcementsPublished": { "type": "integer" }
+          }
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "totalSchools", "totalStudents", "updatedAt"]
+    },
+    "SchoolUsageStats": {
+      "title": "School Usage Stats",
+      "description": "Daily aggregate of usage metrics per school.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "students": { "type": "integer" },
+        "users": { "type": "integer" },
+        "reads": { "type": "integer" },
+        "writes": { "type": "integer" },
+        "storageBytes": { "type": "integer" },
+        "estimatedCost": { "type": "number" },
+        "status": { "type": "string", "enum": ["HEALTHY", "WATCH", "HIGH", "CRITICAL"] },
+        "lastUpdated": { "type": "string", "format": "date-time" }
+      },
+      "required": ["schoolId", "schoolName", "students", "lastUpdated"]
+    },
+    "PlatformSettings": {
+      "title": "Platform Settings",
+      "description": "Platform-wide configuration and pricing.",
+      "type": "object",
+      "properties": {
+        "pricing": {
+          "type": "object",
+          "properties": {
+            "firestoreReadPerMillion": { "type": "number" },
+            "firestoreWritePerMillion": { "type": "number" },
+            "firestoreDeletePerMillion": { "type": "number" },
+            "storagePerGB": { "type": "number" },
+            "bandwidthPerGB": { "type": "number" },
+            "exchangeRate": { "type": "number" }
+          }
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/platformUsage/{date}": {
+      "schema": "PlatformUsage",
+      "description": "Platform-wide usage metrics."
+    },
+    "/platformUsage/{date}/schools/{schoolId}": {
+      "schema": "SchoolUsageStats",
+      "description": "School-specific usage metrics."
+    },
+    "/platformSettings/pricing": {
+      "schema": "PlatformSettings",
+      "description": "Platform pricing configuration."
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "EduKonnect Portal",
+  "description": "A comprehensive, mobile-first multi-tenant school management platform for Nigerian institutions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

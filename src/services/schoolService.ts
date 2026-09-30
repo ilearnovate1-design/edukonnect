@@ -1,0 +1,308 @@
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from './firebase';
+import { SchoolSettings, ReportTemplateSettings, AffectiveTraitConfig } from '../types';
+import { DEFAULT_GRADING_SCALE } from '../utils/formatters';
+
+export const DEFAULT_AFFECTIVE_TRAITS: AffectiveTraitConfig[] = [
+  { id: 'trait-punctuality', trait: 'Punctuality & Regularity', category: 'affective', defaultScore: 5 },
+  { id: 'trait-neatness', trait: 'Neatness & Uniform', category: 'affective', defaultScore: 5 },
+  { id: 'trait-politeness', trait: 'Politeness & Courtesy', category: 'affective', defaultScore: 5 },
+  { id: 'trait-honesty', trait: 'Honesty & Reliability', category: 'affective', defaultScore: 4 },
+  { id: 'trait-peers', trait: 'Relationship with Peers', category: 'affective', defaultScore: 4 },
+  { id: 'trait-attentiveness', trait: 'Attentiveness in Class', category: 'affective', defaultScore: 4 },
+  { id: 'trait-sports', trait: 'Sports & Physical Agility', category: 'psychomotor', defaultScore: 4 },
+  { id: 'trait-creativity', trait: 'Creativity & Handiwork', category: 'psychomotor', defaultScore: 4 },
+];
+
+export const DEFAULT_REPORT_TEMPLATE: ReportTemplateSettings = {
+  principalName: 'Dr. E. O. Okonjo (PhD)',
+  principalTitle: 'Head of School Signature & Stamp',
+  officialSealText: 'APPROVED',
+  teacherTitle: 'Class Teacher Signature',
+  defaultTeacherName: 'Class Teacher',
+
+  principalRemarkDistinction: 'Executive Academic Distinction. Commended for superior intellect and exemplary conduct.',
+  principalRemarkCredit: 'Good academic standing. Maintain steady revision to sustain this standard.',
+  principalRemarkPass: 'Satisfactory performance. Advised to focus on weaker subject areas.',
+  principalRemarkTrial: 'Fair effort. Compulsory holiday coaching recommended in core calculation subjects.',
+
+  teacherAppraisalDistinction: 'An exceptionally brilliant, diligent, and disciplined pupil. Outstanding overall performance!',
+  teacherAppraisalCredit: 'Very good work throughout the term. Shows keen analytical interest and participates actively.',
+  teacherAppraisalPass: 'A steady pupil capable of higher attainment. More diligence required in home assignments.',
+  teacherAppraisalTrial: 'Needs to pay strict attention in class, avoid distractions, and complete all assignments.',
+
+  verdictDistinction: 'PASSED WITH HIGH DISTINCTION',
+  verdictCredit: 'PASSED WITH CREDIT',
+  verdictPass: 'PASSED',
+  verdictTrial: 'PROMOTED ON TRIAL',
+
+  ratingScaleDescription: 'Affective & Psychomotor Skills Rating (5: Excellent | 4: Good | 3: Fair | 2: Poor | 1: Very Poor)',
+  affectiveTraits: DEFAULT_AFFECTIVE_TRAITS,
+
+  clearanceNotice: 'Clearance Verified. Please present this report card upon resumption.',
+  showAttendanceSummary: true,
+  showOfficialSeal: true,
+};
+
+export const DEFAULT_TENANT_ID = 'bistoland';
+
+export const DEFAULT_SCHOOL_SETTINGS: SchoolSettings = {
+  schoolId: DEFAULT_TENANT_ID,
+  slug: DEFAULT_TENANT_ID,
+  schoolName: 'EduKonnect Portal',
+  address: 'Lagos, Nigeria',
+  phone: '+234 800 EDUKONNECT',
+  email: 'support@edukonnect.ng',
+  website: 'https://edukonnect.ng',
+  currentAcademicSession: '2026/2027',
+  currentTerm: 'First Term',
+  nextTermResumptionDate: '2026-09-21',
+  currency: 'NGN',
+  timeZone: 'Africa/Lagos',
+  gradingScale: DEFAULT_GRADING_SCALE,
+  reportTemplate: DEFAULT_REPORT_TEMPLATE,
+};
+
+/**
+ * Fetch school settings by schoolId with seamless fallback to legacy schoolSettings/general
+ */
+export const getSchoolSettings = async (schoolId: string = DEFAULT_TENANT_ID): Promise<SchoolSettings | null> => {
+  const targetId = (schoolId && schoolId.trim()) ? schoolId.trim().toLowerCase() : DEFAULT_TENANT_ID;
+
+  try {
+    // 1. Try modern multi-tenant collection: schools/{schoolId}
+    const schoolDocRef = doc(db, 'schools', targetId);
+    const schoolSnap = await getDoc(schoolDocRef);
+
+    if (schoolSnap.exists()) {
+      const data = schoolSnap.data() as SchoolSettings;
+      return {
+        ...DEFAULT_SCHOOL_SETTINGS,
+        ...data,
+        schoolId: targetId,
+        reportTemplate: {
+          ...DEFAULT_REPORT_TEMPLATE,
+          ...(data.reportTemplate || {}),
+          affectiveTraits: data.reportTemplate?.affectiveTraits?.length
+            ? data.reportTemplate.affectiveTraits
+            : DEFAULT_AFFECTIVE_TRAITS,
+        },
+      };
+    }
+
+    // 2. If target is bistoland or default, check legacy schoolSettings/general
+    if (targetId === DEFAULT_TENANT_ID) {
+      const legacyRef = doc(db, 'schoolSettings', 'general');
+      const legacySnap = await getDoc(legacyRef);
+      if (legacySnap.exists()) {
+        const data = legacySnap.data() as SchoolSettings;
+        return {
+          ...DEFAULT_SCHOOL_SETTINGS,
+          ...data,
+          schoolId: DEFAULT_TENANT_ID,
+          slug: DEFAULT_TENANT_ID,
+          reportTemplate: {
+            ...DEFAULT_REPORT_TEMPLATE,
+            ...(data.reportTemplate || {}),
+            affectiveTraits: data.reportTemplate?.affectiveTraits?.length
+              ? data.reportTemplate.affectiveTraits
+              : DEFAULT_AFFECTIVE_TRAITS,
+          },
+        };
+      }
+    }
+
+    return {
+      ...DEFAULT_SCHOOL_SETTINGS,
+      schoolId: targetId,
+      slug: targetId,
+    };
+  } catch (err) {
+    console.error(`Error fetching school settings for ${targetId}:`, err);
+    return DEFAULT_SCHOOL_SETTINGS;
+  }
+};
+
+/**
+ * Save school settings for a specific schoolId, keeping legacy schoolSettings/general synchronized for bistoland
+ */
+export const saveSchoolSettings = async (
+  settings: Partial<SchoolSettings>,
+  schoolId: string = DEFAULT_TENANT_ID
+): Promise<void> => {
+  const targetId = (schoolId && schoolId.trim()) ? schoolId.trim().toLowerCase() : DEFAULT_TENANT_ID;
+
+  // 1. Write to modern multi-tenant collection: schools/{targetId}
+  const schoolDocRef = doc(db, 'schools', targetId);
+  const existing = await getDoc(schoolDocRef);
+
+  const payload = {
+    ...settings,
+    schoolId: targetId,
+    slug: targetId,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (existing.exists()) {
+    await setDoc(schoolDocRef, payload, { merge: true });
+  } else {
+    await setDoc(schoolDocRef, {
+      ...DEFAULT_SCHOOL_SETTINGS,
+      ...payload,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  // 2. If targetId is bistoland, also sync to legacy doc for zero-disruption compatibility
+  if (targetId === DEFAULT_TENANT_ID) {
+    try {
+      const legacyRef = doc(db, 'schoolSettings', 'general');
+      await setDoc(legacyRef, payload, { merge: true });
+    } catch (legacyErr) {
+      console.warn('Could not sync to legacy schoolSettings/general:', legacyErr);
+    }
+  }
+};
+
+/**
+ * Resolve schoolId by domain or hostname
+ */
+export const resolveSchoolByDomain = async (hostname: string): Promise<string> => {
+  if (!hostname) return DEFAULT_TENANT_ID;
+
+  const cleanHost = hostname.toLowerCase().trim();
+
+  // If subdomain pattern: e.g. bistoland.edukonnect.ng -> bistoland
+  const parts = cleanHost.split('.');
+  if (parts.length > 2) {
+    const sub = parts[0];
+    // Ignore common infrastructure subdomains and AI Studio auto-generated dev domains
+    const isInfra = ['www', 'portal', 'app', 'dev', 'test', 'stage'].includes(sub);
+    const isAiStudioDev = sub.startsWith('ais-dev-') || sub.startsWith('ais-pre-');
+    
+    if (sub && !isInfra && !isAiStudioDev) {
+      return sub;
+    }
+  }
+
+  try {
+    const domainDoc = await getDoc(doc(db, 'schoolDomains', cleanHost));
+    if (domainDoc.exists()) {
+      const dData = domainDoc.data();
+      if (dData.schoolId) return dData.schoolId;
+    }
+  } catch (e) {
+    // Ignore and fallback
+  }
+
+  return DEFAULT_TENANT_ID;
+};
+
+/**
+ * List all registered schools for super-admin management
+ */
+export const getAllSchools = async (): Promise<SchoolSettings[]> => {
+  try {
+    const { getDocs, collection, query, orderBy } = await import('firebase/firestore');
+    const snap = await getDocs(query(collection(db, 'schools'), orderBy('schoolName')));
+    const list: SchoolSettings[] = [];
+    snap.forEach((d) => list.push({ ...d.data(), schoolId: d.id } as SchoolSettings));
+    return list;
+  } catch (err) {
+    console.error('Error listing all schools:', err);
+    return [];
+  }
+};
+
+/**
+ * Associate a domain with a specific schoolId
+ */
+export const mapDomainToSchool = async (domain: string, schoolId: string): Promise<void> => {
+  try {
+    const cleanDomain = domain.toLowerCase().trim();
+    await setDoc(doc(db, 'schoolDomains', cleanDomain), {
+      domain: cleanDomain,
+      schoolId: schoolId.toLowerCase().trim(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.error('Error mapping domain:', err);
+    throw err;
+  }
+};
+
+/**
+ * Remove a domain mapping
+ */
+export const removeDomainMapping = async (domain: string): Promise<void> => {
+  try {
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(db, 'schoolDomains', domain.toLowerCase().trim()));
+  } catch (err) {
+    console.error('Error removing domain mapping:', err);
+    throw err;
+  }
+};
+
+/**
+ * Delete a school institution, remove domain mappings, and optionally wipe all tenant records
+ */
+export const deleteSchool = async (
+  schoolId: string, 
+  purgeTenantData: boolean = true,
+  adminUid: string = 'admin'
+): Promise<{ success: boolean; deletedCollectionsCount?: number }> => {
+  const targetId = (schoolId && schoolId.trim()) ? schoolId.trim().toLowerCase() : '';
+  if (!targetId) {
+    throw new Error('Valid school ID is required for deletion');
+  }
+
+  try {
+    const { deleteDoc, getDocs, collection, query, where, writeBatch } = await import('firebase/firestore');
+
+    // 1. Optionally purge all tenant-specific data
+    let deletedCount = 0;
+    if (purgeTenantData) {
+      try {
+        const { purgeCollections } = await import('./dataManagement');
+        const allCollections = [
+          'students', 'classes', 'subjects', 'teachers', 'parents', 'attendance', 
+          'feeStructures', 'payments', 'results', 'assignments', 'submissions', 
+          'announcements', 'notifications', 'evaluations', 'auditLogs'
+        ];
+        const res = await purgeCollections(allCollections, adminUid, targetId);
+        deletedCount = res.deletedCount;
+      } catch (purgeErr) {
+        console.warn(`Warning while purging tenant records for ${targetId}:`, purgeErr);
+      }
+    }
+
+    // 2. Remove domain mappings for this school
+    try {
+      const domainSnap = await getDocs(query(collection(db, 'schoolDomains'), where('schoolId', '==', targetId)));
+      if (!domainSnap.empty) {
+        const dBatch = writeBatch(db);
+        domainSnap.docs.forEach((d) => dBatch.delete(d.ref));
+        await dBatch.commit();
+      }
+    } catch (domainErr) {
+      console.warn(`Could not remove domain mappings for ${targetId}:`, domainErr);
+    }
+
+    // 3. Delete the primary school document
+    await deleteDoc(doc(db, 'schools', targetId));
+
+    // 4. Delete legacy or secondary schoolSettings document if present
+    try {
+      await deleteDoc(doc(db, 'schoolSettings', targetId));
+    } catch (settingsErr) {
+      // Ignore if document didn't exist
+    }
+
+    return { success: true, deletedCollectionsCount: deletedCount };
+  } catch (err) {
+    console.error(`Error deleting school ${targetId}:`, err);
+    throw err;
+  }
+};
+

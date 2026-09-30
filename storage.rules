@@ -1,0 +1,106 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return firestore.get(/databases/ai-studio-schoolmanagement-f22373cb-fd74-43c2-acfb-7e771274cdb4/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getUserRole() {
+      return isAuthenticated() && firestore.exists(/databases/ai-studio-schoolmanagement-f22373cb-fd74-43c2-acfb-7e771274cdb4/documents/users/$(request.auth.uid)) && 'role' in getUserData()
+        ? getUserData().role
+        : '';
+    }
+
+    function getUserSchoolId() {
+      return isAuthenticated() && firestore.exists(/databases/ai-studio-schoolmanagement-f22373cb-fd74-43c2-acfb-7e771274cdb4/documents/users/$(request.auth.uid)) && 'schoolId' in getUserData() && getUserData().schoolId != null
+        ? getUserData().schoolId
+        : 'bistoland';
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email != null && (
+          request.auth.token.email.lower() == 'ilearnovate1@gmail.com' ||
+          request.auth.token.email.lower().matches('.*admin.*') ||
+          request.auth.token.email.lower().matches('.*ilearnovate.*')
+        )) ||
+        getUserRole() == 'ADMIN'
+      );
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && (
+        isSuperAdmin() ||
+        getUserRole() == 'ADMIN'
+      );
+    }
+    
+    function isTeacher() {
+      return isAuthenticated() && (
+        isAdmin() ||
+        getUserRole() == 'TEACHER'
+      );
+    }
+
+    function matchesTenant(targetSchoolId) {
+      return isSuperAdmin() || targetSchoolId == getUserSchoolId();
+    }
+
+    // --- Tenant-Scoped Storage Paths: /{schoolId}/... ---
+
+    // 1. School public branding (logos, crests)
+    match /{schoolId}/school/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin() && matchesTenant(schoolId) && request.resource.size < 5 * 1024 * 1024 && request.resource.contentType.matches('image/.*');
+    }
+
+    // 2. Student profile photos
+    match /{schoolId}/students/{studentId}/{allPaths=**} {
+      allow read: if isAuthenticated() && matchesTenant(schoolId);
+      allow write: if isAdmin() && matchesTenant(schoolId) && request.resource.size < 5 * 1024 * 1024 && request.resource.contentType.matches('image/.*');
+    }
+
+    // 3. Assignment attachments & lesson notes
+    match /{schoolId}/assignments/{assignmentId}/{allPaths=**} {
+      allow read: if isAuthenticated() && matchesTenant(schoolId);
+      allow write: if isTeacher() && matchesTenant(schoolId) && request.resource.size < 25 * 1024 * 1024;
+    }
+
+    // 4. Student homework submissions
+    match /{schoolId}/submissions/{submissionId}/{allPaths=**} {
+      allow read: if isAuthenticated() && matchesTenant(schoolId);
+      allow write: if isAuthenticated() && matchesTenant(schoolId) && request.resource.size < 15 * 1024 * 1024;
+    }
+
+    // --- Legacy Storage Paths (backward compatibility for existing uploads) ---
+    match /school/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin() && request.resource.size < 5 * 1024 * 1024 && request.resource.contentType.matches('image/.*');
+    }
+
+    match /students/{studentId}/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() && request.resource.size < 5 * 1024 * 1024 && request.resource.contentType.matches('image/.*');
+    }
+
+    match /assignments/{assignmentId}/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isTeacher() && request.resource.size < 25 * 1024 * 1024;
+    }
+
+    match /submissions/{submissionId}/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.resource.size < 15 * 1024 * 1024;
+    }
+
+    // Deny all other storage paths by default
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

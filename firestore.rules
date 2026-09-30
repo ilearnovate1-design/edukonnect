@@ -1,0 +1,295 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Core Authentication & Role Validation Helpers
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isSuperAdminEmail() {
+      return isAuthenticated() &&
+        request.auth.token != null &&
+        'email' in request.auth.token &&
+        (
+          request.auth.token.email == 'ilearnovate1@gmail.com' ||
+          request.auth.token.email == 'admin@edukonnect.ng' ||
+          request.auth.token.email.matches('(?i).*admin.*') ||
+          request.auth.token.email.matches('(?i).*ilearnovate.*')
+        );
+    }
+
+    function userExists() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        isSuperAdminEmail() ||
+        (userExists() && (
+          getUserData().get('isSuperAdmin', false) == true ||
+          getUserData().get('role', '') == 'SUPER_ADMIN'
+        ))
+      );
+    }
+    
+    function getUserRole() {
+      return userExists() ? getUserData().get('role', '') : '';
+    }
+
+    function getUserSchoolId() {
+      return userExists() ? getUserData().get('schoolId', 'bistoland') : 'bistoland';
+    }
+
+    function isApproved() {
+      return isSuperAdmin() || (userExists() && getUserData().get('approvalStatus', 'PENDING_SETUP') == 'APPROVED');
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && (
+        isSuperAdmin() ||
+        getUserRole() == 'ADMIN'
+      );
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && (
+        isSuperAdmin() ||
+        getUserRole() == 'TEACHER' ||
+        getUserRole() == 'ADMIN'
+      );
+    }
+
+    function isParent() {
+      return isAuthenticated() && (
+        isAdmin() ||
+        getUserRole() == 'PARENT'
+      );
+    }
+
+    // Platform level access (Super Admin only)
+    match /platformUsage/{date} {
+      allow read, write: if isSuperAdmin();
+      match /{allSubcollections=**} {
+        allow read, write: if isSuperAdmin();
+      }
+    }
+    match /platformSettings/{id} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    // Multi-Tenant Isolation Helpers
+    function docMatchesTenant(data) {
+      return isSuperAdmin() ||
+        (isApproved() && (
+          (!('schoolId' in data) && getUserSchoolId() == 'bistoland') ||
+          (data.get('schoolId', 'bistoland') == getUserSchoolId())
+        ));
+    }
+
+    function canCreateInTenant() {
+      return isSuperAdmin() ||
+        (isApproved() && (request.resource.data.get('schoolId', 'bistoland') == getUserSchoolId()));
+    }
+
+    function canUpdateInTenant() {
+      return isSuperAdmin() ||
+        (isApproved() && docMatchesTenant(resource.data) && (
+          request.resource.data.get('schoolId', getUserSchoolId()) == getUserSchoolId()
+        ));
+    }
+
+    function canDeleteInTenant() {
+      return isSuperAdmin() || (isApproved() && docMatchesTenant(resource.data));
+    }
+
+    // 1. School Profile & Settings (Public read, Staff write)
+    match /schools/{schoolId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isAdmin() && 
+        (isSuperAdmin() || getUserData().get('approvalStatus', 'PENDING_SETUP') == 'PENDING_SETUP');
+      allow update: if isAuthenticated() && (isAdmin() || isTeacher()) &&
+        (isSuperAdmin() || schoolId == getUserSchoolId() || schoolId == 'bistoland');
+      allow delete: if isSuperAdmin() || (isAuthenticated() && isAdmin() && isApproved() && schoolId == getUserSchoolId());
+    }
+
+    match /schoolSettings/{docId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated() && (isAdmin() || isTeacher()) &&
+        (isSuperAdmin() || docId == getUserSchoolId() || docId == 'default' || docId == 'bistoland' || docId == 'general');
+      allow delete: if isSuperAdmin() || (isAuthenticated() && isAdmin() && isApproved() && docId == getUserSchoolId());
+    }
+
+    match /schoolDomains/{domain} {
+      allow read: if true;
+      allow write: if isSuperAdmin() || (isAuthenticated() && isAdmin() && isApproved() && ('schoolId' in resource.data) && resource.data.schoolId == getUserSchoolId());
+    }
+
+    // 2. User Accounts & Identity Protection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (request.auth.uid == userId || isSuperAdmin());
+      allow update: if isAuthenticated() && (
+        (request.auth.uid == userId && (
+          // Case 1: Standard update (no status change)
+          (!('approvalStatus' in request.resource.data) || request.resource.data.approvalStatus == resource.data.approvalStatus) ||
+          // Case 2: PENDING_SETUP -> PENDING_APPROVAL transition
+          (resource.data.get('approvalStatus', 'PENDING_SETUP') == 'PENDING_SETUP' && 
+           request.resource.data.get('approvalStatus', 'PENDING_SETUP') == 'PENDING_APPROVAL')
+        )) || 
+        isSuperAdmin()
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // 3. Students Directory
+    match /students/{studentId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && canCreateInTenant();
+      allow update: if isAdmin() && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 4. Parents Directory
+    match /parents/{parentId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && canCreateInTenant();
+      allow update: if isAdmin() && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 5. Teachers Directory
+    match /teachers/{teacherId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && canCreateInTenant();
+      allow update: if isAdmin() && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 6. Classes & Grade Arms
+    match /classes/{classId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && canCreateInTenant();
+      allow update: if isAdmin() && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 7. Academic Subjects
+    match /subjects/{subjectId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && canCreateInTenant();
+      allow update: if isAdmin() && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 8. Daily Pupil Attendance
+    match /attendance/{attendanceId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canCreateInTenant();
+      allow update: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 9. Fee Structures & Tariffs (Bursary Schedule)
+    match /feeStructures/{feeStructureId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && canCreateInTenant() && 
+        'amount' in request.resource.data && 
+        request.resource.data.amount is number && 
+        request.resource.data.amount > 0;
+      allow update: if isAdmin() && canUpdateInTenant() && 
+        'amount' in request.resource.data && 
+        request.resource.data.amount is number && 
+        request.resource.data.amount > 0;
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 10. Student Fee Payments & Receipts
+    match /payments/{paymentId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && canCreateInTenant() && 
+        'amount' in request.resource.data && 
+        request.resource.data.amount is number && 
+        request.resource.data.amount > 0;
+      allow update: if isAdmin() && canUpdateInTenant() && 
+        'amount' in request.resource.data && 
+        request.resource.data.amount is number && 
+        request.resource.data.amount > 0;
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 11. Terminal Examination & CA Results
+    match /results/{resultId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canCreateInTenant();
+      allow update: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 12. Homework & Assignments
+    match /assignments/{assignmentId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canCreateInTenant();
+      allow update: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canUpdateInTenant();
+      allow delete: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canDeleteInTenant();
+    }
+
+    // 13. Student Assignment Submissions
+    match /submissions/{submissionId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAuthenticated() && canCreateInTenant();
+      allow update: if isAuthenticated() && canUpdateInTenant();
+      allow delete: if (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canDeleteInTenant();
+    }
+
+    // 14. Bulletins & Announcements
+    match /announcements/{announcementId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && canCreateInTenant();
+      allow update: if isAdmin() && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 15. In-App Notifications
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()) && docMatchesTenant(resource.data);
+      allow create: if isAuthenticated() && canCreateInTenant();
+      allow update: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()) && canUpdateInTenant();
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()) && canDeleteInTenant();
+    }
+
+    // 16. Security Audit Logs
+    match /auditLogs/{auditId} {
+      allow get: if isAdmin() && docMatchesTenant(resource.data);
+      allow list: if isAdmin();
+      allow create: if isAuthenticated() && canCreateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+      allow update: if false;
+    }
+
+    // 17. Student Terminal Evaluations & Remarks
+    match /evaluations/{evalId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow list: if isAuthenticated();
+      allow create: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canCreateInTenant();
+      allow update: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+  }
+}

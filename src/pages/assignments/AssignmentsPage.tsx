@@ -1,0 +1,595 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  collection, getDocs, doc, setDoc, updateDoc, query, where, orderBy, serverTimestamp, limit
+} from 'firebase/firestore';
+import { db } from '../../services/firebase';
+import { Assignment, SchoolClass, Subject, Student, Submission } from '../../types';
+import { Button } from '../../components/common/Button';
+import { Input, Select } from '../../components/common/Input';
+import { Card, CardBody, CardHeader } from '../../components/common/Card';
+import { Modal } from '../../components/common/Modal';
+import { SubmissionsModal } from '../../components/assignments/SubmissionsModal';
+import { SubmitWorkModal } from '../../components/assignments/SubmitWorkModal';
+import { useAuth } from '../../contexts/AuthContext';
+import { useSchool } from '../../contexts/SchoolContext';
+import { formatDate, logAudit, parseFirebaseError } from '../../utils/formatters';
+import { ClipboardList, Plus, Calendar, BookOpen, Clock, CheckCircle2, Paperclip } from 'lucide-react';
+
+export const AssignmentsPage: React.FC = () => {
+  const { role, currentUser, currentTeacher, currentParent } = useAuth();
+  const { schoolId } = useSchool();
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [classes, setClasses] = useState<SchoolClass[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [parentSubmissionsMap, setParentSubmissionsMap] = useState<Map<string, Submission>>(new Map());
+  const [loading, setLoading] = useState(true);
+
+  // Filter
+  const [classFilter, setClassFilter] = useState('ALL');
+
+  // Modal
+  const [showModal, setShowModal] = useState(false);
+  const [editingAssignment, setEditingAssignment] = useState<Assignment | null>(null);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [classId, setClassId] = useState('');
+  const [subjectId, setSubjectId] = useState('');
+  const [dueDate, setDueDate] = useState(new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0]);
+  const [status, setStatus] = useState<'DRAFT' | 'PUBLISHED' | 'CLOSED'>('PUBLISHED');
+  const [attachmentUrl, setAttachmentUrl] = useState('');
+  const [attachmentName, setAttachmentName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  const matchesTenant = (itemSchoolId?: string) => {
+    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+  };
+  
+  // Submissions Modal
+  const [showSubmissionsModal, setShowSubmissionsModal] = useState(false);
+  const [assignmentForSubmissions, setAssignmentForSubmissions] = useState<Assignment | null>(null);
+  const [classStudents, setClassStudents] = useState<Student[]>([]);
+
+  // Parent Submit Modal
+  const [assignmentForSubmitWork, setAssignmentForSubmitWork] = useState<Assignment | null>(null);
+  const [parentChildren, setParentChildren] = useState<Student[]>([]);
+
+  
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    // limit to 700KB to fit safely in 1MB Firestore limit
+    if (file.size > 700 * 1024) {
+      setFormError('File size must be under 700KB. Please choose a smaller file.');
+      return;
+    }
+    setFormError('');
+    setAttachmentName(file.name);
+    
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      if (ev.target?.result) {
+        setAttachmentUrl(ev.target.result as string);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+  
+  const handleViewSubmissions = async (assignment: Assignment) => {
+    setLoading(true);
+    try {
+      const q = query(
+        collection(db, 'students'),
+        where('classId', '==', assignment.classId),
+        where('status', '==', 'ACTIVE')
+      );
+      const snap = await getDocs(q);
+      const sList: Student[] = [];
+      snap.forEach(d => sList.push(d.data() as Student));
+      sList.sort((a, b) => a.firstName.localeCompare(b.firstName));
+      
+      setClassStudents(sList);
+      setAssignmentForSubmissions(assignment);
+      setShowSubmissionsModal(true);
+    } catch (err) {
+      console.error('Error fetching students:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      let parentChildClassIds = new Set<string>();
+      let pChildren: Student[] = [];
+
+      if (role === 'PARENT') {
+        const userEmail = currentUser?.email?.toLowerCase().trim();
+        if (userEmail) {
+          try {
+            const sSnap = await getDocs(query(collection(db, 'students'), where('parentEmails', 'array-contains', userEmail)));
+            sSnap.forEach(d => {
+              const s = d.data() as Student;
+              parentChildClassIds.add(s.classId);
+              if (!pChildren.find(x => x.studentId === s.studentId)) pChildren.push(s);
+            });
+          } catch(e) {}
+        }
+        if (currentParent?.parentId) {
+          try {
+            const sSnap = await getDocs(query(collection(db, 'students'), where('parentIds', 'array-contains', currentParent.parentId)));
+            sSnap.forEach(d => {
+              const s = d.data() as Student;
+              parentChildClassIds.add(s.classId);
+              if (!pChildren.find(x => x.studentId === s.studentId)) pChildren.push(s);
+            });
+          } catch(e) {}
+        }
+        setParentChildren(pChildren);
+
+        // Fetch submissions for parent's children
+        const childIds = pChildren.map(c => c.studentId);
+        if (childIds.length > 0) {
+          try {
+            const subSnap = await getDocs(
+              query(collection(db, 'submissions'), where('studentId', 'in', childIds.slice(0, 10)))
+            );
+            const sMap = new Map<string, Submission>();
+            subSnap.forEach(d => {
+              const sub = d.data() as Submission;
+              sMap.set(sub.assignmentId, sub);
+            });
+            setParentSubmissionsMap(sMap);
+          } catch (e) {
+            console.warn('Failed to fetch parent child submissions:', e);
+          }
+        }
+      }
+
+      const cSnap = await getDocs(collection(db, 'classes'));
+      let cList: SchoolClass[] = [];
+      cSnap.forEach((d) => {
+        const item = d.data() as SchoolClass;
+        if (matchesTenant(item.schoolId)) cList.push(item);
+      });
+
+      if (role === 'TEACHER') {
+        const assignedIds = currentTeacher?.assignedClassIds || [];
+        cList = cList.filter(
+          (c) => assignedIds.includes(c.classId) || c.classTeacherId === currentTeacher?.teacherId
+        );
+      } else if (role === 'PARENT') {
+        cList = cList.filter((c) => parentChildClassIds.has(c.classId));
+      }
+
+      setClasses(cList);
+      if (cList.length > 0 && !classId) setClassId(cList[0].classId);
+      else if (cList.length === 0) setClassId('');
+
+      const subSnap = await getDocs(collection(db, 'subjects'));
+      const subList: Subject[] = [];
+      subSnap.forEach((d) => {
+        const item = d.data() as Subject;
+        if (matchesTenant(item.schoolId)) subList.push(item);
+      });
+      setSubjects(subList);
+      if (subList.length > 0 && !subjectId) setSubjectId(subList[0].subjectId);
+
+      const aSnap = await getDocs(query(collection(db, 'assignments'), orderBy('createdAt', 'desc'), limit(100)));
+      let aList: Assignment[] = [];
+      aSnap.forEach((d) => {
+        const item = d.data() as Assignment;
+        if (matchesTenant(item.schoolId)) aList.push(item);
+      });
+
+      if (role === 'TEACHER') {
+        const assignedIds = new Set(currentTeacher?.assignedClassIds || []);
+        aList = aList.filter(
+          (a) => assignedIds.has(a.classId) || a.teacherId === currentUser?.uid
+        );
+      } else if (role === 'PARENT') {
+        aList = aList.filter(
+          (a) => parentChildClassIds.has(a.classId) && a.status === 'PUBLISHED'
+        );
+      }
+
+      aList.sort((a, b) => (b.dueDate > a.dueDate ? 1 : -1));
+      setAssignments(aList);
+    } catch (err) {
+      console.error('Error fetching assignments:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, [role, currentTeacher, currentParent, currentUser, schoolId]);
+
+  const openAddModal = () => {
+    setEditingAssignment(null);
+    setTitle('');
+    setDescription('');
+    setDueDate(new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0]);
+    setStatus('PUBLISHED');
+    setAttachmentUrl('');
+    setAttachmentName('');
+    setFormError('');
+    setShowModal(true);
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim() || !description.trim() || !classId || !subjectId) {
+      setFormError('Please fill in title, instructions, class, and subject.');
+      return;
+    }
+
+    setSaving(true);
+    setFormError('');
+    try {
+      const aId = editingAssignment?.assignmentId || `assign-${Date.now()}`;
+      const targetSchoolId = editingAssignment?.schoolId || schoolId || 'bistoland';
+      const payload: Partial<Assignment> = {
+        assignmentId: aId,
+        schoolId: targetSchoolId,
+        title: title.trim(),
+        description: description.trim(),
+        classId,
+        subjectId,
+        teacherId: editingAssignment?.teacherId || currentTeacher?.teacherId || currentUser?.uid || 'teacher',
+        dueDate,
+        attachmentUrl,
+        attachmentName,
+        status,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (!editingAssignment) {
+        payload.createdAt = serverTimestamp();
+      }
+
+      await setDoc(doc(db, 'assignments', aId), payload, { merge: true });
+
+      try {
+        await logAudit(
+          currentUser?.uid || 'user',
+          editingAssignment ? 'ASSIGNMENT_UPDATED' : 'ASSIGNMENT_CREATED',
+          'assignments',
+          aId,
+          `${editingAssignment ? 'Updated' : 'Created'} homework: "${title}" for ${classId}`,
+          targetSchoolId
+        );
+      } catch (auditErr) {
+        console.warn('Could not record assignment audit log:', auditErr);
+      }
+
+      setShowModal(false);
+      await fetchData();
+    } catch (err: any) {
+      console.error('Error saving assignment:', err);
+      setFormError(parseFirebaseError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const classesMap = new Map<string, SchoolClass>(classes.map((c) => [c.classId, c]));
+  const subjectsMap = new Map<string, Subject>(subjects.map((s) => [s.subjectId, s]));
+
+  const filteredAssignments = assignments.filter((a) => {
+    if (classFilter !== 'ALL' && a.classId !== classFilter) return false;
+    return true;
+  });
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">
+            Homework & Classroom Tasks
+          </h2>
+          <p className="text-xs sm:text-sm text-slate-500">
+            Post weekly homework, class projects, and track completion
+          </p>
+        </div>
+
+        {(role === 'ADMIN' || role === 'TEACHER') && (
+          <Button
+            variant="primary"
+            onClick={openAddModal}
+            leftIcon={<Plus className="w-4 h-4" />}
+          >
+            Create Assignment
+          </Button>
+        )}
+      </div>
+
+      {/* Filter Bar */}
+      <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs flex items-center gap-3">
+        <label className="text-xs font-semibold text-slate-700">Filter by Class:</label>
+        <select
+          id="assignment-class-filter"
+          value={classFilter}
+          onChange={(e) => setClassFilter(e.target.value)}
+          className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+        >
+          <option value="ALL">All Classes</option>
+          {classes.map((c) => (
+            <option key={c.classId} value={c.classId}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Grid of Assignments */}
+      {loading ? (
+        <div className="py-12 text-center text-xs text-slate-500">Loading assignments...</div>
+      ) : filteredAssignments.length === 0 ? (
+        <Card>
+          <div className="py-12 text-center text-xs text-slate-500">
+            No homework assignments found. Tap "Create Assignment" to post homework.
+          </div>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filteredAssignments.map((a) => {
+            const cls = classesMap.get(a.classId);
+            const sub = subjectsMap.get(a.subjectId);
+
+            return (
+              <Card key={a.assignmentId} className="flex flex-col justify-between h-full">
+                <CardBody className="p-5 flex flex-col justify-between h-full">
+                  <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200/60">
+                        {cls?.name || 'Class'} • {sub?.name || 'Subject'}
+                      </span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                        a.status === 'PUBLISHED' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
+                      }`}>
+                        {a.status}
+                      </span>
+                    </div>
+
+                    <h3 className="text-base font-bold text-slate-900 mt-2.5">
+                      {a.title}
+                    </h3>
+                    <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
+                      {a.description}
+                    </p>
+                    
+                    {a.attachmentUrl && (
+                      <div className="mt-3">
+                        <a 
+                          href={a.attachmentUrl}
+                          download={a.attachmentName || 'assignment-attachment'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors text-xs font-semibold"
+                        >
+                          <Paperclip className="w-3.5 h-3.5 text-slate-500" />
+                          <span className="truncate max-w-[200px]">{a.attachmentName || 'Download Attachment'}</span>
+                        </a>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-1 text-rose-600 font-semibold">
+                      <Clock className="w-3.5 h-3.5" />
+                      Due: {formatDate(a.dueDate)}
+                    </span>
+                    <div className="flex gap-3">
+                      {(role === 'ADMIN' || role === 'TEACHER') && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleViewSubmissions(a)}
+                            className="text-emerald-700 hover:text-emerald-900 font-semibold text-xs cursor-pointer"
+                          >
+                            Submissions
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingAssignment(a);
+                              setTitle(a.title);
+                              setDescription(a.description);
+                              setClassId(a.classId);
+                              setSubjectId(a.subjectId);
+                              setDueDate(a.dueDate);
+                              setStatus(a.status);
+                              setAttachmentUrl(a.attachmentUrl || '');
+                              setAttachmentName(a.attachmentName || '');
+                              setShowModal(true);
+                            }}
+                            className="text-emerald-800 hover:text-emerald-950 font-semibold text-xs cursor-pointer"
+                          >
+                            Edit
+                          </button>
+                        </>
+                      )}
+                      {role === 'PARENT' && (
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {(() => {
+                            const sub = parentSubmissionsMap.get(a.assignmentId);
+                            const isGraded = sub?.status === 'GRADED';
+                            const isSubmitted = sub?.status === 'SUBMITTED';
+
+                            if (isGraded) {
+                              return (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                  Graded ({sub.score}/100)
+                                </span>
+                              );
+                            }
+                            if (isSubmitted) {
+                              return (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-800 border border-blue-300">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
+                                  Submitted
+                                </span>
+                              );
+                            }
+                            return (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200">
+                                <Clock className="w-3.5 h-3.5 text-amber-600" />
+                                Not Submitted
+                              </span>
+                            );
+                          })()}
+
+                          <button
+                            type="button"
+                            onClick={() => setAssignmentForSubmitWork(a)}
+                            className="text-emerald-700 hover:text-emerald-900 font-semibold text-xs cursor-pointer px-3 py-1.5 rounded bg-emerald-50 border border-emerald-200"
+                          >
+                            {parentSubmissionsMap.get(a.assignmentId)?.status === 'GRADED'
+                              ? 'View Grade'
+                              : parentSubmissionsMap.get(a.assignmentId)?.status === 'SUBMITTED'
+                              ? 'View / Edit Submission'
+                              : 'Submit Work'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </CardBody>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Add / Edit Modal */}
+      <Modal
+        isOpen={showModal}
+        onClose={() => setShowModal(false)}
+        title={editingAssignment ? 'Edit Assignment' : 'Create New Assignment'}
+        subtitle="Give students homework instructions and submission deadlines"
+        maxWidth="md"
+      >
+        <form onSubmit={handleSave} className="space-y-4">
+          {formError && (
+            <div className="p-3 text-xs bg-rose-50 border border-rose-200 text-rose-700 rounded-lg">
+              {formError}
+            </div>
+          )}
+
+          <Input
+            id="assign-title"
+            label="Assignment Title *"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+            placeholder="e.g. Fractions and Decimals Problem Set"
+          />
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Select
+              id="assign-class"
+              label="Target Class *"
+              value={classId}
+              onChange={(e) => setClassId(e.target.value)}
+              options={classes.map((c) => ({ value: c.classId, label: c.name }))}
+              required
+            />
+            <Select
+              id="assign-subject"
+              label="Subject *"
+              value={subjectId}
+              onChange={(e) => setSubjectId(e.target.value)}
+              options={subjects.map((s) => ({ value: s.subjectId, label: s.name }))}
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              id="assign-due-date"
+              type="date"
+              label="Submission Due Date *"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              required
+            />
+            <Select
+              id="assign-status"
+              label="Status"
+              value={status}
+              onChange={(e) => setStatus(e.target.value as any)}
+              options={[
+                { value: 'PUBLISHED', label: 'Published (Pupils & Parents see)' },
+                { value: 'DRAFT', label: 'Draft' },
+                { value: 'CLOSED', label: 'Closed / Past Due' },
+              ]}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Instructions & Questions *
+            </label>
+            <textarea
+              id="assign-desc"
+              rows={4}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              required
+              placeholder="e.g. Solve exercises 1 to 10 on page 42 of New General Mathematics textbook. Show all working in your homework exercise book."
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs sm:text-sm focus:ring-2 focus:ring-emerald-600 focus:bg-white"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Attach Resource (Max 700KB PDF/Doc/Image)
+            </label>
+            <input
+              type="file"
+              onChange={handleFileChange}
+              accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+              className="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+            />
+            {attachmentName && (
+              <p className="mt-1 text-[10px] text-emerald-700 font-medium">Attached: {attachmentName}</p>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-100">
+            <Button variant="outline" type="button" onClick={() => setShowModal(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="submit" isLoading={saving}>
+              {editingAssignment ? 'Save Changes' : 'Post Assignment'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <SubmissionsModal
+        isOpen={showSubmissionsModal}
+        onClose={() => setShowSubmissionsModal(false)}
+        assignment={assignmentForSubmissions}
+        students={classStudents}
+      />
+
+      <SubmitWorkModal
+        isOpen={!!assignmentForSubmitWork}
+        onClose={() => setAssignmentForSubmitWork(null)}
+        assignment={assignmentForSubmitWork}
+        student={
+          assignmentForSubmitWork
+            ? parentChildren.find(c => c.classId === assignmentForSubmitWork.classId) || null
+            : null
+        }
+        onSuccess={fetchData}
+      />
+    </div>
+  );
+};
