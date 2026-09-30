@@ -24,7 +24,11 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   onViewReportCard,
 }) => {
   const { currentParent, currentUser } = useAuth();
-  const { settings } = useSchool();
+  const { settings, schoolId } = useSchool();
+
+  const matchesTenant = (itemSchoolId?: string) => {
+    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+  };
 
   const [children, setChildren] = useState<Student[]>([]);
   const [selectedChildId, setSelectedChildId] = useState<string>('');
@@ -56,7 +60,9 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
         const cMap = new Map<string, SchoolClass>();
         cSnap.forEach((d) => {
           const c = d.data() as SchoolClass;
-          cMap.set(c.classId, c);
+          if (matchesTenant(c.schoolId)) {
+            cMap.set(c.classId, c);
+          }
         });
         setClassesMap(cMap);
 
@@ -254,10 +260,15 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
         // F. Announcements
         try {
           const annSnap = await getDocs(
-            query(collection(db, 'announcements'), where('audience', 'in', ['ALL', 'PARENTS']), limit(4))
+            query(collection(db, 'announcements'), where('audience', 'in', ['ALL', 'PARENTS']), limit(20))
           );
           const annList: Announcement[] = [];
-          annSnap.forEach((d) => annList.push(d.data() as Announcement));
+          annSnap.forEach((d) => {
+            const ann = d.data() as Announcement;
+            if (matchesTenant(ann.schoolId) && annList.length < 4) {
+              annList.push(ann);
+            }
+          });
           setAnnouncements(annList);
         } catch (e) {
           console.warn('Announcements fetch notice:', e);

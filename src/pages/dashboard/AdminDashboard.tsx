@@ -23,8 +23,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onNavigate,
   onOpenQuickAction,
 }) => {
-  const { settings } = useSchool();
+  const { settings, schoolId } = useSchool();
   const [loading, setLoading] = useState(true);
+
+  // Tenant matching helper
+  const matchesTenant = (itemSchoolId?: string) => {
+    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+  };
 
   // Metrics
   const [totalStudents, setTotalStudents] = useState(0);
@@ -46,19 +51,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         const today = getTodayDateString();
         const studentsMap = new Map<string, Student>();
 
-        // 1. Fetch Students
+        // 1. Fetch Students strictly for current tenant school
         try {
           const studentsSnap = await getDocs(query(collection(db, 'students'), where('status', '==', 'ACTIVE')));
           studentsSnap.forEach((doc) => {
             const s = doc.data() as Student;
-            studentsMap.set(s.studentId, s);
+            if (matchesTenant(s.schoolId)) {
+              studentsMap.set(s.studentId, s);
+            }
           });
           setTotalStudents(studentsMap.size);
         } catch (sErr) {
           console.warn('Dashboard students load warning:', sErr);
         }
 
-        // 2. Fetch Today's Attendance
+        // 2. Fetch Today's Attendance for current tenant school
         try {
           const attSnap = await getDocs(query(collection(db, 'attendance'), where('date', '==', today)));
           let present = 0;
@@ -68,6 +75,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           attSnap.forEach((doc) => {
             const a = doc.data() as AttendanceRecord;
+            if (!matchesTenant(a.schoolId)) return;
+
             if (a.status === 'PRESENT') present++;
             else if (a.status === 'ABSENT') absent++;
             else if (a.status === 'LATE') late++;
@@ -87,7 +96,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           console.warn('Dashboard attendance load warning:', attErr);
         }
 
-        // 3. Calculate Fees Outstanding
+        // 3. Calculate Fees Outstanding for current tenant school
         try {
           const feeStructSnap = await getDocs(query(
             collection(db, 'feeStructures'), 
@@ -98,6 +107,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           let expectedTotal = 0;
           feeStructSnap.forEach((fDoc) => {
             const fee = fDoc.data();
+            if (!matchesTenant(fee.schoolId)) return;
+
             let classCount = 0;
             studentsMap.forEach((s) => {
               if (s.classId === fee.classId) classCount++;
@@ -115,6 +126,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           const payList: { payment: Payment; studentName: string }[] = [];
           paySnap.forEach((pDoc) => {
             const p = pDoc.data() as Payment;
+            if (!matchesTenant(p.schoolId)) return;
+
             paidTotal += p.amount || 0;
             const s = studentsMap.get(p.studentId);
             payList.push({
@@ -132,25 +145,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           console.warn('Dashboard fees load warning:', fErr);
         }
 
-        // 4. Assignments
+        // 4. Assignments for current tenant school
         try {
           const assignSnap = await getDocs(query(
             collection(db, 'assignments'),
             where('status', '==', 'PUBLISHED'),
-            limit(5)
+            limit(20)
           ));
           const aList: Assignment[] = [];
-          assignSnap.forEach((doc) => aList.push(doc.data() as Assignment));
+          assignSnap.forEach((doc) => {
+            const a = doc.data() as Assignment;
+            if (matchesTenant(a.schoolId) && aList.length < 5) {
+              aList.push(a);
+            }
+          });
           setUpcomingAssignments(aList);
         } catch (aErr) {
           console.warn('Dashboard assignments load warning:', aErr);
         }
 
-        // 5. Announcements
+        // 5. Announcements for current tenant school
         try {
-          const annSnap = await getDocs(query(collection(db, 'announcements'), limit(4)));
+          const annSnap = await getDocs(query(collection(db, 'announcements'), limit(20)));
           const annList: Announcement[] = [];
-          annSnap.forEach((doc) => annList.push(doc.data() as Announcement));
+          annSnap.forEach((doc) => {
+            const ann = doc.data() as Announcement;
+            if (matchesTenant(ann.schoolId) && annList.length < 4) {
+              annList.push(ann);
+            }
+          });
           setRecentAnnouncements(annList);
         } catch (annErr) {
           console.warn('Dashboard announcements load warning:', annErr);
@@ -164,7 +187,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
 
     fetchDashboardData();
-  }, [settings]);
+  }, [settings, schoolId]);
 
   return (
     <div className="space-y-6">

@@ -18,12 +18,16 @@ interface TeacherDashboardProps {
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigate }) => {
   const { currentTeacher, currentUser } = useAuth();
-  const { settings } = useSchool();
+  const { settings, schoolId } = useSchool();
   const [assignedClasses, setAssignedClasses] = useState<SchoolClass[]>([]);
   const [todayAttendance, setTodayAttendance] = useState<{ student: Student; att?: AttendanceRecord }[]>([]);
   const [myAssignments, setMyAssignments] = useState<Assignment[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const matchesTenant = (itemSchoolId?: string) => {
+    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+  };
 
   useEffect(() => {
     const fetchTeacherData = async () => {
@@ -31,28 +35,41 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigate }
       try {
         const today = getTodayDateString();
 
-        // 1. Fetch Assigned Classes
+        // 1. Fetch Assigned Classes strictly for current tenant
         let classIds = currentTeacher?.assignedClassIds || [];
         const classesSnap = await getDocs(collection(db, 'classes'));
         const allClasses: SchoolClass[] = [];
-        classesSnap.forEach((doc) => allClasses.push(doc.data() as SchoolClass));
+        classesSnap.forEach((doc) => {
+          const c = doc.data() as SchoolClass;
+          if (matchesTenant(c.schoolId)) {
+            allClasses.push(c);
+          }
+        });
 
         let relevantClasses: SchoolClass[] = [];
         if (classIds.length > 0) {
           relevantClasses = allClasses.filter((c) => classIds.includes(c.classId));
         } else if (currentTeacher?.teacherId) {
           relevantClasses = allClasses.filter((c) => c.classTeacherId === currentTeacher.teacherId);
+        } else {
+          // If no specific assignment, default to all classes in this teacher's school
+          relevantClasses = allClasses;
         }
         setAssignedClasses(relevantClasses);
 
-        // 2. Fetch Students for the first assigned class or all
+        // 2. Fetch Students for the assigned class or all
         const targetClassId = relevantClasses[0]?.classId;
         if (targetClassId) {
           const sSnap = await getDocs(
             query(collection(db, 'students'), where('classId', '==', targetClassId), where('status', '==', 'ACTIVE'))
           );
           const students: Student[] = [];
-          sSnap.forEach((d) => students.push(d.data() as Student));
+          sSnap.forEach((d) => {
+            const s = d.data() as Student;
+            if (matchesTenant(s.schoolId)) {
+              students.push(s);
+            }
+          });
 
           // Fetch attendance for these students today
           const attSnap = await getDocs(
@@ -61,7 +78,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigate }
           const attMap = new Map<string, AttendanceRecord>();
           attSnap.forEach((d) => {
             const a = d.data() as AttendanceRecord;
-            attMap.set(a.studentId, a);
+            if (matchesTenant(a.schoolId)) {
+              attMap.set(a.studentId, a);
+            }
           });
 
           setTodayAttendance(
@@ -70,22 +89,34 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigate }
               att: attMap.get(s.studentId),
             }))
           );
+        } else {
+          setTodayAttendance([]);
         }
 
-        // 3. Assignments
+        // 3. Assignments for current tenant
         const aSnap = await getDocs(
-          query(collection(db, 'assignments'), limit(5))
+          query(collection(db, 'assignments'), limit(20))
         );
         const aList: Assignment[] = [];
-        aSnap.forEach((d) => aList.push(d.data() as Assignment));
+        aSnap.forEach((d) => {
+          const a = d.data() as Assignment;
+          if (matchesTenant(a.schoolId) && aList.length < 5) {
+            aList.push(a);
+          }
+        });
         setMyAssignments(aList);
 
         // 4. Announcements for teachers or all
         const annSnap = await getDocs(
-          query(collection(db, 'announcements'), where('audience', 'in', ['ALL', 'TEACHERS']), limit(4))
+          query(collection(db, 'announcements'), where('audience', 'in', ['ALL', 'TEACHERS']), limit(20))
         );
         const annList: Announcement[] = [];
-        annSnap.forEach((d) => annList.push(d.data() as Announcement));
+        annSnap.forEach((d) => {
+          const ann = d.data() as Announcement;
+          if (matchesTenant(ann.schoolId) && annList.length < 4) {
+            annList.push(ann);
+          }
+        });
         setAnnouncements(annList);
 
       } catch (err) {
@@ -96,7 +127,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigate }
     };
 
     fetchTeacherData();
-  }, [currentTeacher]);
+  }, [currentTeacher, schoolId]);
 
   return (
     <div className="space-y-6">
