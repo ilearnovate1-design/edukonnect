@@ -273,12 +273,12 @@ export const FeesPage: React.FC = () => {
 
     setIsSavingStructure(true);
     try {
-      const targetSchoolId = schoolId || 'bistoland';
+      const targetSchoolId = editingStructure?.schoolId || schoolId || 'bistoland';
       const structId = editingStructure
         ? editingStructure.feeStructureId
         : `fee-${structClassId}-${structName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}`;
 
-      const payload: FeeStructure = {
+      const payload: any = {
         feeStructureId: structId,
         schoolId: targetSchoolId,
         classId: structClassId,
@@ -287,20 +287,39 @@ export const FeesPage: React.FC = () => {
         name: structName.trim(),
         feeType: structName.trim(),
         amount: amt,
-        category: structCategory,
-        applicableTo: structApplicableTo,
+        category: structCategory || 'MANDATORY',
+        applicableTo: structApplicableTo || 'ALL',
         assignedStudentIds: structApplicableTo === 'SPECIFIC_STUDENTS' ? structAssignedStudentIds : [],
         excludedStudentIds: structApplicableTo === 'EXCLUDE_STUDENTS' ? structExcludedStudentIds : [],
-        description: structDescription.trim() || undefined,
         active: true,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (structDescription.trim()) {
+        payload.description = structDescription.trim();
+      }
+
+      if (!editingStructure) {
+        payload.createdAt = serverTimestamp();
+      }
+
+      await setDoc(doc(db, 'feeStructures', structId), payload, { merge: true });
+
+      // Optimistic local state update
+      const localUpdated: FeeStructure = {
+        ...payload,
         createdAt: editingStructure?.createdAt || new Date(),
         updatedAt: new Date(),
       };
 
-      await setDoc(doc(db, 'feeStructures', structId), {
-        ...payload,
-        createdAt: editingStructure?.createdAt || serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      setStructures((prev) => {
+        const existingIdx = prev.findIndex((s) => s.feeStructureId === structId);
+        if (existingIdx >= 0) {
+          const next = [...prev];
+          next[existingIdx] = { ...next[existingIdx], ...localUpdated };
+          return next;
+        }
+        return [...prev, localUpdated];
       });
 
       await logAudit(
@@ -315,9 +334,9 @@ export const FeesPage: React.FC = () => {
       setShowStructureModal(false);
       setEditingStructure(null);
       await fetchData();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving fee structure:', err);
-      alert('Failed to save fee structure. Please verify permissions.');
+      alert(`Failed to save fee structure: ${err?.message || 'Please verify permissions.'}`);
     } finally {
       setIsSavingStructure(false);
     }
@@ -329,17 +348,26 @@ export const FeesPage: React.FC = () => {
 
     setIsSavingQuickAssign(true);
     try {
-      const targetSchoolId = schoolId || 'bistoland';
+      const targetSchoolId = quickAssignStructure.schoolId || schoolId || 'bistoland';
       const docRef = doc(db, 'feeStructures', quickAssignStructure.feeStructureId);
 
-      const updates: Partial<FeeStructure> = {
+      const updates: any = {
         applicableTo: quickScope,
         assignedStudentIds: quickScope === 'SPECIFIC_STUDENTS' ? quickAssignedIds : [],
         excludedStudentIds: quickScope === 'EXCLUDE_STUDENTS' ? quickExcludedIds : [],
-        updatedAt: new Date(),
+        updatedAt: serverTimestamp(),
       };
 
-      await setDoc(docRef, { ...updates, updatedAt: serverTimestamp() }, { merge: true });
+      await setDoc(docRef, updates, { merge: true });
+
+      // Optimistic update
+      setStructures((prev) =>
+        prev.map((s) =>
+          s.feeStructureId === quickAssignStructure.feeStructureId
+            ? { ...s, ...updates, updatedAt: new Date() }
+            : s
+        )
+      );
 
       await logAudit(
         currentUser?.uid || 'admin',
@@ -352,9 +380,9 @@ export const FeesPage: React.FC = () => {
 
       setQuickAssignStructure(null);
       await fetchData();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving student assignments:', err);
-      alert('Failed to update student assignments.');
+      alert(`Failed to update student assignments: ${err?.message || 'Please try again.'}`);
     } finally {
       setIsSavingQuickAssign(false);
     }
@@ -367,22 +395,26 @@ export const FeesPage: React.FC = () => {
     setIsDeletingStructure(true);
     try {
       const targetSchoolId = deletingStructure.schoolId || schoolId || 'bistoland';
-      await deleteDoc(doc(db, 'feeStructures', deletingStructure.feeStructureId));
+      const structId = deletingStructure.feeStructureId;
+      await deleteDoc(doc(db, 'feeStructures', structId));
+
+      // Optimistic deletion
+      setStructures((prev) => prev.filter((s) => s.feeStructureId !== structId));
 
       await logAudit(
         currentUser?.uid || 'admin',
         'FEE_STRUCTURE_DELETED',
         'feeStructures',
-        deletingStructure.feeStructureId,
+        structId,
         `Deleted fee tariff "${deletingStructure.name || deletingStructure.feeType}" (₦${deletingStructure.amount.toLocaleString()}) from ${classesMap.get(deletingStructure.classId)?.name}`,
         targetSchoolId
       );
 
       setDeletingStructure(null);
       await fetchData();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error deleting fee structure:', err);
-      alert('Failed to delete fee structure. Please check permissions.');
+      alert(`Failed to delete fee structure: ${err?.message || 'Please check permissions.'}`);
     } finally {
       setIsDeletingStructure(false);
     }

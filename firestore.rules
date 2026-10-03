@@ -48,6 +48,13 @@ service cloud.firestore {
     function isApproved() {
       return isSuperAdmin() || (userExists() && getUserData().get('approvalStatus', 'PENDING_SETUP') == 'APPROVED');
     }
+
+    function isApprovedOrSetup() {
+      return isSuperAdmin() || (userExists() && (
+        getUserData().get('approvalStatus', 'PENDING_SETUP') == 'APPROVED' ||
+        getUserData().get('approvalStatus', 'PENDING_SETUP') == 'PENDING_SETUP'
+      ));
+    }
     
     function isAdmin() {
       return isAuthenticated() && (
@@ -85,16 +92,17 @@ service cloud.firestore {
     // Multi-Tenant Isolation Helpers
     function docMatchesTenant(data) {
       return isSuperAdmin() ||
-        (isApproved() && (
+        (isApprovedOrSetup() && (
           (!('schoolId' in data) && getUserSchoolId() == 'bistoland') ||
-          (data.get('schoolId', 'bistoland') == getUserSchoolId())
+          (data.get('schoolId', 'bistoland') == getUserSchoolId()) ||
+          (getUserSchoolId() == 'bistoland')
         ));
     }
 
     function canCreateInTenant() {
       return isSuperAdmin() ||
         (
-          (isApproved() || (userExists() && getUserData().get('approvalStatus', 'PENDING_SETUP') == 'PENDING_SETUP')) && (
+          isApprovedOrSetup() && (
             request.resource.data.get('schoolId', 'bistoland') == getUserSchoolId() ||
             getUserSchoolId() == 'bistoland'
           )
@@ -104,15 +112,16 @@ service cloud.firestore {
     function canUpdateInTenant() {
       return isSuperAdmin() ||
         (
-          isApproved() && docMatchesTenant(resource.data) && (
+          isApprovedOrSetup() && docMatchesTenant(resource.data) && (
             request.resource.data.get('schoolId', getUserSchoolId()) == getUserSchoolId() ||
+            request.resource.data.get('schoolId', 'bistoland') == resource.data.get('schoolId', 'bistoland') ||
             getUserSchoolId() == 'bistoland'
           )
         );
     }
 
     function canDeleteInTenant() {
-      return isSuperAdmin() || (isApproved() && docMatchesTenant(resource.data));
+      return isSuperAdmin() || (isApprovedOrSetup() && docMatchesTenant(resource.data));
     }
 
     // 1. School Profile & Settings (Public read, Staff write)
