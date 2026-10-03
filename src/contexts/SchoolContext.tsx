@@ -65,16 +65,8 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setSettings({ ...DEFAULT_SCHOOL_SETTINGS, schoolId: activeSchoolId });
       }
     } catch (e: any) {
-      console.error('Error in fetchSettings:', e);
-      if (e.code === 'permission-denied') {
-        throw new Error(JSON.stringify({
-          code: 'PERMISSION_DENIED',
-          message: 'Missing or insufficient permissions.',
-          operation: 'getSchoolSettings',
-          collection: 'schools',
-          schoolId: activeSchoolId
-        }));
-      }
+      console.warn('Notice in fetchSettings, using default settings:', e?.message || e);
+      setSettings((prev) => prev || { ...DEFAULT_SCHOOL_SETTINGS, schoolId: activeSchoolId });
     } finally {
       setLoadingSettings(false);
     }

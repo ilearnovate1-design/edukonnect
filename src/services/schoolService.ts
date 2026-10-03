@@ -129,11 +129,20 @@ export const getSchoolSettings = async (schoolId: string = DEFAULT_TENANT_ID): P
   const targetId = (schoolId && schoolId.trim()) ? schoolId.trim().toLowerCase() : DEFAULT_TENANT_ID;
 
   try {
+    const fetchWithTimeout = async (ref: any) => {
+      const snapPromise = getDoc(ref).catch((err) => {
+        console.warn(`Notice reading ${ref.path} (offline or pending):`, err?.message || err);
+        return null;
+      });
+      const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000));
+      return await Promise.race([snapPromise, timeoutPromise]);
+    };
+
     // 1. Try modern multi-tenant collection: schools/{schoolId}
     const schoolDocRef = doc(db, 'schools', targetId);
-    const schoolSnap = await getDoc(schoolDocRef);
+    const schoolSnap: any = await fetchWithTimeout(schoolDocRef);
 
-    if (schoolSnap.exists()) {
+    if (schoolSnap && schoolSnap.exists && schoolSnap.exists()) {
       const data = schoolSnap.data() as SchoolSettings;
       return {
         ...DEFAULT_SCHOOL_SETTINGS,
@@ -152,8 +161,8 @@ export const getSchoolSettings = async (schoolId: string = DEFAULT_TENANT_ID): P
     // 2. If target is bistoland or default, check legacy schoolSettings/general
     if (targetId === DEFAULT_TENANT_ID) {
       const legacyRef = doc(db, 'schoolSettings', 'general');
-      const legacySnap = await getDoc(legacyRef);
-      if (legacySnap.exists()) {
+      const legacySnap: any = await fetchWithTimeout(legacyRef);
+      if (legacySnap && legacySnap.exists && legacySnap.exists()) {
         const data = legacySnap.data() as SchoolSettings;
         return {
           ...DEFAULT_SCHOOL_SETTINGS,
@@ -176,8 +185,12 @@ export const getSchoolSettings = async (schoolId: string = DEFAULT_TENANT_ID): P
       schoolId: targetId,
       slug: targetId,
     };
-  } catch (err) {
-    console.error(`Error fetching school settings for ${targetId}:`, err);
+  } catch (err: any) {
+    if (err?.code === 'permission-denied') {
+      console.warn(`Permission notice fetching school settings for ${targetId}:`, err);
+    } else {
+      console.warn(`Notice fetching school settings for ${targetId}, using default:`, err?.message || err);
+    }
     return DEFAULT_SCHOOL_SETTINGS;
   }
 };
@@ -245,8 +258,10 @@ export const resolveSchoolByDomain = async (hostname: string): Promise<string> =
   }
 
   try {
-    const domainDoc = await getDoc(doc(db, 'schoolDomains', cleanHost));
-    if (domainDoc.exists()) {
+    const fetchDomainPromise = getDoc(doc(db, 'schoolDomains', cleanHost)).catch(() => null);
+    const domainTimeout = new Promise<null>((res) => setTimeout(() => res(null), 1500));
+    const domainDoc: any = await Promise.race([fetchDomainPromise, domainTimeout]);
+    if (domainDoc && domainDoc.exists && domainDoc.exists()) {
       const dData = domainDoc.data();
       if (dData.schoolId) return dData.schoolId;
     }

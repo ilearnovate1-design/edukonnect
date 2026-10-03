@@ -34,9 +34,11 @@ export default function App() {
 
   const [currentPage, setCurrentPage] = useState<string>('dashboard');
 
-  // Diagnostic: Test connection on mount
+  // Prevent endless loading screen: force ready after 2.5s
+  const [forceReady, setForceReady] = useState(false);
   useEffect(() => {
-    testFirestoreConnection();
+    const timer = setTimeout(() => setForceReady(true), 2500);
+    return () => clearTimeout(timer);
   }, []);
 
   // Global Report Card Viewer state
@@ -99,7 +101,7 @@ export default function App() {
   };
 
   // Loading state
-  if (authLoading || schoolLoading) {
+  if ((authLoading || schoolLoading) && !forceReady) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <LoadingSpinner size="lg" text="Connecting to EduKonnect Portal..." />
@@ -120,6 +122,15 @@ export default function App() {
       <LoginPage
         onSetupRequested={() => setCurrentPage('setup')}
       />
+    );
+  }
+
+  // Logged in: Check Profile Resolution
+  if (currentUser && !appUser && !forceReady) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <LoadingSpinner size="lg" text="Loading profile..." />
+      </div>
     );
   }
 
@@ -163,7 +174,14 @@ export default function App() {
       {/* 1. Dashboard View */}
       {currentPage === 'dashboard' && (
         <>
-          {isAtLeastAdmin && (
+          {role === 'TEACHER' ? (
+            <TeacherDashboard onNavigate={setCurrentPage} />
+          ) : role === 'PARENT' ? (
+            <ParentDashboard
+              onNavigate={setCurrentPage}
+              onViewReportCard={handleViewReportCard}
+            />
+          ) : (
             <AdminDashboard 
               onNavigate={setCurrentPage} 
               onOpenQuickAction={(action) => {
@@ -172,13 +190,6 @@ export default function App() {
                 if (action === 'create-assignment') setCurrentPage('assignments');
                 if (action === 'new-announcement') setCurrentPage('announcements');
               }}
-            />
-          )}
-          {role === 'TEACHER' && <TeacherDashboard onNavigate={setCurrentPage} />}
-          {role === 'PARENT' && (
-            <ParentDashboard
-              onNavigate={setCurrentPage}
-              onViewReportCard={handleViewReportCard}
             />
           )}
         </>
@@ -314,6 +325,15 @@ export default function App() {
         <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
           <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
           <p className="text-xs text-slate-500 mt-1">Platform monitoring is restricted to system administrators.</p>
+        </div>
+      )}
+
+      {/* Unmatched Page Fallback */}
+      {!['dashboard', 'students', 'attendance', 'fees', 'results', 'assignments', 'classes', 'teachers', 'parents', 'announcements', 'settings', 'audit', 'setup', 'superadmin', 'usage'].includes(currentPage) && (
+        <div className="p-12 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+          <h3 className="text-base font-bold text-slate-900">Page Not Found</h3>
+          <p className="text-xs text-slate-500 mt-1 mb-4">The requested view is not available.</p>
+          <Button variant="primary" size="sm" onClick={() => setCurrentPage('dashboard')}>Return to Dashboard</Button>
         </div>
       )}
 

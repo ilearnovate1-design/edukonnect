@@ -13,7 +13,7 @@ import { Button } from '../../components/common/Button';
 import { AttendanceBadge } from '../../components/common/Badge';
 import { formatNaira, formatDate, formatTime, getTodayDateString } from '../../utils/formatters';
 import { Student, AttendanceRecord, Payment, Announcement, Assignment, FeeStructure } from '../../types';
-import { isFeeApplicableToStudent } from '../../utils/feeUtils';
+import { isFeeApplicableToStudent, areTermsMatching } from '../../utils/feeUtils';
 
 interface AdminDashboardProps {
   onNavigate: (page: string) => void;
@@ -99,16 +99,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         // 3. Calculate Fees Outstanding for current tenant school
         try {
-          const feeStructSnap = await getDocs(query(
-            collection(db, 'feeStructures'), 
-            where('academicSession', '==', settings.currentAcademicSession),
-            where('term', '==', settings.currentTerm)
-          ));
+          const feeStructSnap = await getDocs(collection(db, 'feeStructures'));
           
           let expectedTotal = 0;
           feeStructSnap.forEach((fDoc) => {
             const fee = fDoc.data() as FeeStructure;
             if (!matchesTenant(fee.schoolId)) return;
+            if (fee.academicSession && fee.academicSession !== settings.currentAcademicSession) return;
+            if (!areTermsMatching(fee.term, settings.currentTerm)) return;
 
             studentsMap.forEach((s) => {
               if (s.classId === fee.classId && isFeeApplicableToStudent(fee, s.studentId)) {

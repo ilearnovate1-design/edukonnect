@@ -119,7 +119,7 @@ export interface AttendanceRecord {
 }
 
 export type FeeCategory = 'MANDATORY' | 'OPTIONAL' | 'ADDON' | 'OTHER';
-export type FeeApplicableScope = 'ALL' | 'SPECIFIC_STUDENTS' | 'EXCLUDE_STUDENTS';
+export type FeeApplicableScope = 'ALL' | 'SPECIFIC_STUDENTS' | 'EXCLUDE_STUDENTS' | 'NONE';
 
 export interface FeeStructure {
   feeStructureId: string;

@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { Student, SchoolClass, AttendanceRecord, Result, Payment, Assignment, Announcement, FeeStructure, Submission } from '../../types';
 import { formatNaira, formatDate, formatTime, getTodayDateString } from '../../utils/formatters';
-import { isFeeApplicableToStudent } from '../../utils/feeUtils';
+import { isFeeApplicableToStudent, areTermsMatching } from '../../utils/feeUtils';
 import { SubmitWorkModal } from '../../components/assignments/SubmitWorkModal';
 import { ReceiptModal } from '../../components/fees/ReceiptModal';
 
@@ -187,14 +187,14 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
             const fSnap = await getDocs(
               query(
                 collection(db, 'feeStructures'),
-                where('classId', '==', selectedChild.classId),
-                where('academicSession', '==', settings.currentAcademicSession),
-                where('term', '==', settings.currentTerm)
+                where('classId', '==', selectedChild.classId)
               )
             );
             let exp = 0;
             fSnap.forEach((d) => {
               const fee = d.data() as FeeStructure;
+              if (fee.academicSession && fee.academicSession !== settings.currentAcademicSession) return;
+              if (!areTermsMatching(fee.term, settings.currentTerm)) return;
               if (isFeeApplicableToStudent(fee, selectedChild.studentId)) {
                 exp += fee.amount || 0;
               }

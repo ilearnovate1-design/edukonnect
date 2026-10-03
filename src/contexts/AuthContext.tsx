@@ -43,10 +43,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const fetchProfile = async (firebaseUser: User) => {
     try {
-      const userDocRef = doc(db, 'users', firebaseUser.uid);
-      const userSnap = await getDoc(userDocRef);
+      const fetchWithTimeout = async (ref: any) => {
+        const snapPromise = getDoc(ref).catch((err) => {
+          console.warn(`Notice reading ${ref.path} (offline or pending):`, err?.message || err);
+          return null;
+        });
+        const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000));
+        return await Promise.race([snapPromise, timeoutPromise]);
+      };
 
-      if (userSnap.exists()) {
+      const userDocRef = doc(db, 'users', firebaseUser.uid);
+      const userSnap: any = await fetchWithTimeout(userDocRef);
+
+      if (userSnap && userSnap.exists && userSnap.exists()) {
         const uData = userSnap.data() as AppUser;
         const emailLower = firebaseUser.email?.toLowerCase().trim() || '';
         const isDesignatedAdmin = emailLower === 'ilearnovate1@gmail.com' || emailLower === 'admin@edukonnect.ng';
@@ -65,18 +74,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // Auto-approve existing teachers and parents if they don't have a status
+        // Auto-approve existing staff and parents if they don't have a status
         if (!uData.approvalStatus) {
-          if (uData.role === 'TEACHER' || uData.role === 'PARENT') {
-            uData.approvalStatus = 'APPROVED';
-            updates.approvalStatus = 'APPROVED';
-            needsUpdate = true;
-          } else if (uData.role === 'ADMIN') {
-            // If they already have a school, they are pending approval, otherwise pending setup
-            uData.approvalStatus = uData.schoolId && uData.schoolId !== 'bistoland' ? 'PENDING_APPROVAL' : 'PENDING_SETUP';
-            updates.approvalStatus = uData.approvalStatus;
-            needsUpdate = true;
-          }
+          uData.approvalStatus = 'APPROVED';
+          updates.approvalStatus = 'APPROVED';
+          needsUpdate = true;
         }
 
         // Ensure schoolId is present (defaulting to bistoland for existing customer)
@@ -189,16 +191,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setAppUser(newAppUser);
       }
     } catch (err: any) {
-      console.warn('Notice fetching user profile from Firestore:', err);
-      if (err?.code === 'permission-denied') {
-        throw new Error(JSON.stringify({
-          code: 'PERMISSION_DENIED',
-          message: 'Missing or insufficient permissions.',
-          operation: 'getDoc',
-          collection: 'users',
-          uid: firebaseUser.uid
-        }));
-      }
+      console.warn('Notice fetching user profile from Firestore:', err?.message || err);
       // Provide resilient fallback profile so offline/cached sessions continue operating seamlessly
       const emailLower = firebaseUser.email?.toLowerCase().trim() || '';
       const isDesignatedAdmin = emailLower === 'ilearnovate1@gmail.com' || emailLower === 'admin@edukonnect.ng';
@@ -211,15 +204,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         approvalStatus: 'APPROVED',
         schoolId: 'bistoland',
         active: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       });
     }
   };
 
   useEffect(() => {
+    // Safety timer: ensure loading is never stuck at true for more than 2.5 seconds
+    const safetyTimer = setTimeout(() => {
+      setLoading(false);
+    }, 2500);
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      clearTimeout(safetyTimer);
       setCurrentUser(user);
       if (user) {
-        await fetchProfile(user);
+        try {
+          await fetchProfile(user);
+        } catch (e) {
+          console.warn('Profile fetch notice:', e);
+        }
       } else {
         setAppUser(null);
         setCurrentParent(null);
@@ -228,7 +233,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      clearTimeout(safetyTimer);
+      unsubscribe();
+    };
   }, []);
 
   const login = async (email: string, pass: string) => {

@@ -401,7 +401,7 @@ export const StudentsPage: React.FC = () => {
         onClose={() => setDocumentStudent(null)}
         student={documentStudent}
         schoolClass={documentStudent ? classes.find((c) => c.classId === documentStudent.classId) : null}
-        parent={documentStudent?.parentId ? parents.find((p) => p.parentId === documentStudent.parentId) : null}
+        parent={documentStudent?.parentIds?.[0] ? parents.find((p) => p.parentId === documentStudent.parentIds[0]) : null}
       />
     </div>
   );

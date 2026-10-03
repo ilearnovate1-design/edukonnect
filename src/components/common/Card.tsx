@@ -19,15 +19,24 @@ export const Card: React.FC<CardProps> = ({ children, className = '', id, ...pro
 };
 
 export const CardHeader: React.FC<{
-  title: string;
+  title?: string;
   subtitle?: string;
   action?: React.ReactNode;
   className?: string;
-}> = ({ title, subtitle, action, className = '' }) => {
+  children?: React.ReactNode;
+}> = ({ title, subtitle, action, className = '', children }) => {
+  if (children) {
+    return (
+      <div className={`px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-4 ${className}`}>
+        {children}
+      </div>
+    );
+  }
+
   return (
     <div className={`px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-4 ${className}`}>
       <div>
-        <h3 className="text-base font-semibold text-slate-900 tracking-tight">{title}</h3>
+        {title && <h3 className="text-base font-semibold text-slate-900 tracking-tight">{title}</h3>}
         {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
       </div>
       {action && <div>{action}</div>}
