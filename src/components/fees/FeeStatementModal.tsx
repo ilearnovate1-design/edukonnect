@@ -4,6 +4,7 @@ import { Button } from '../common/Button';
 import { Student, SchoolClass, Payment, FeeStructure } from '../../types';
 import { useSchool } from '../../contexts/SchoolContext';
 import { formatDate, formatNaira } from '../../utils/formatters';
+import { getStudentItemizedFeeList } from '../../utils/feeUtils';
 import { printDocumentElement, downloadDocumentAsFile } from '../../utils/documentGenerator';
 import { Printer, Download, CheckCircle2, AlertCircle } from 'lucide-react';
 
@@ -14,6 +15,7 @@ interface FeeStatementModalProps {
   schoolClass?: SchoolClass | null;
   payments: Payment[];
   expectedFee: number;
+  structures?: FeeStructure[];
 }
 
 export const FeeStatementModal: React.FC<FeeStatementModalProps> = ({
@@ -23,6 +25,7 @@ export const FeeStatementModal: React.FC<FeeStatementModalProps> = ({
   schoolClass,
   payments,
   expectedFee,
+  structures = [],
 }) => {
   const { settings } = useSchool();
 
@@ -31,6 +34,8 @@ export const FeeStatementModal: React.FC<FeeStatementModalProps> = ({
   const totalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
   const balanceRemaining = Math.max(0, expectedFee - totalPaid);
   const isFullyPaid = balanceRemaining <= 0 && expectedFee > 0;
+
+  const itemizedFees = getStudentItemizedFeeList(student, structures, settings.currentTerm);
 
   const docTitle = `Fee_Statement_${student.admissionNumber}_${student.firstName}_${student.lastName}`;
   const filename = `${docTitle}.html`;
@@ -121,6 +126,72 @@ export const FeeStatementModal: React.FC<FeeStatementModalProps> = ({
               <span className="text-sm sm:text-base font-black text-rose-700">{formatNaira(balanceRemaining)}</span>
             </div>
           </div>
+
+          {/* Itemized Assessed Tariffs Breakdown */}
+          {itemizedFees.length > 0 && (
+            <div className="space-y-1.5">
+              <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider">
+                Assessed Class Tariffs & Levies
+              </h4>
+              <div className="border border-slate-300 rounded-lg overflow-hidden text-xs">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300">
+                    <tr>
+                      <th className="px-4 py-2">Fee Item</th>
+                      <th className="px-3 py-2">Classification</th>
+                      <th className="px-3 py-2">Applicability Status</th>
+                      <th className="px-4 py-2 text-right">Assessed Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {itemizedFees.map(({ fee, isApplicable, effectiveAmount }) => (
+                      <tr key={fee.feeStructureId} className={isApplicable ? 'bg-white' : 'bg-slate-50/70 text-slate-400'}>
+                        <td className="px-4 py-2 font-medium text-slate-900">
+                          {fee.name || fee.feeType}
+                          {fee.description && (
+                            <span className="block text-[10px] text-slate-500 font-normal">{fee.description}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                            fee.category === 'OPTIONAL' || fee.category === 'OTHER' || fee.category === 'ADDON'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-slate-100 text-slate-700'
+                          }`}>
+                            {fee.category || 'Compulsory'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          {isApplicable ? (
+                            <span className="inline-flex items-center text-emerald-700 font-bold text-[11px]">
+                              ✓ Assigned
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center text-slate-400 italic text-[11px]">
+                              Exempt / Not Assigned
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-right font-bold text-slate-900">
+                          {isApplicable ? formatNaira(effectiveAmount) : '₦0'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t border-slate-200">
+                    <tr>
+                      <td colSpan={3} className="px-4 py-2 text-slate-700 text-right uppercase text-[11px]">
+                        Total Assessed Pupil Tariff:
+                      </td>
+                      <td className="px-4 py-2 text-right font-black text-slate-900">
+                        {formatNaira(expectedFee)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Itemized Payments History */}
           <div className="space-y-1.5">

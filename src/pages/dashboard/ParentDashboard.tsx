@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { Student, SchoolClass, AttendanceRecord, Result, Payment, Assignment, Announcement, FeeStructure, Submission } from '../../types';
 import { formatNaira, formatDate, formatTime, getTodayDateString } from '../../utils/formatters';
+import { isFeeApplicableToStudent } from '../../utils/feeUtils';
 import { SubmitWorkModal } from '../../components/assignments/SubmitWorkModal';
 import { ReceiptModal } from '../../components/fees/ReceiptModal';
 
@@ -193,7 +194,10 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
             );
             let exp = 0;
             fSnap.forEach((d) => {
-              exp += (d.data() as FeeStructure).amount || 0;
+              const fee = d.data() as FeeStructure;
+              if (isFeeApplicableToStudent(fee, selectedChild.studentId)) {
+                exp += fee.amount || 0;
+              }
             });
             setFeeExpected(exp);
 

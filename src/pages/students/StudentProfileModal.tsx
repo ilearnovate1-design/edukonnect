@@ -6,6 +6,7 @@ import { Button } from '../../components/common/Button';
 import { StudentStatusBadge, AttendanceBadge } from '../../components/common/Badge';
 import { Student, Parent, SchoolClass, AttendanceRecord, Result, Payment, Assignment, FeeStructure } from '../../types';
 import { formatNaira, formatDate, formatTime } from '../../utils/formatters';
+import { isFeeApplicableToStudent } from '../../utils/feeUtils';
 import { useSchool } from '../../contexts/SchoolContext';
 import { Printer, User, Phone, MapPin, Calendar, Heart, ShieldAlert, FileText, Download } from 'lucide-react';
 import { StudentProfileDocumentModal } from '../../components/students/StudentProfileDocumentModal';
@@ -87,7 +88,10 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({
           );
           let totalExpected = 0;
           feeSnap.forEach((d) => {
-            totalExpected += (d.data() as FeeStructure).amount || 0;
+            const fee = d.data() as FeeStructure;
+            if (isFeeApplicableToStudent(fee, student.studentId)) {
+              totalExpected += fee.amount || 0;
+            }
           });
           setExpectedFee(totalExpected);
         }

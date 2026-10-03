@@ -12,7 +12,8 @@ import { Card, CardBody, CardHeader } from '../../components/common/Card';
 import { Button } from '../../components/common/Button';
 import { AttendanceBadge } from '../../components/common/Badge';
 import { formatNaira, formatDate, formatTime, getTodayDateString } from '../../utils/formatters';
-import { Student, AttendanceRecord, Payment, Announcement, Assignment } from '../../types';
+import { Student, AttendanceRecord, Payment, Announcement, Assignment, FeeStructure } from '../../types';
+import { isFeeApplicableToStudent } from '../../utils/feeUtils';
 
 interface AdminDashboardProps {
   onNavigate: (page: string) => void;
@@ -106,14 +107,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           
           let expectedTotal = 0;
           feeStructSnap.forEach((fDoc) => {
-            const fee = fDoc.data();
+            const fee = fDoc.data() as FeeStructure;
             if (!matchesTenant(fee.schoolId)) return;
 
-            let classCount = 0;
             studentsMap.forEach((s) => {
-              if (s.classId === fee.classId) classCount++;
+              if (s.classId === fee.classId && isFeeApplicableToStudent(fee, s.studentId)) {
+                expectedTotal += fee.amount || 0;
+              }
             });
-            expectedTotal += (fee.amount || 0) * classCount;
           });
 
           const paySnap = await getDocs(query(
