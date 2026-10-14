@@ -29,7 +29,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Tenant matching helper
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   // Metrics

@@ -46,7 +46,7 @@ export const ResultsPage: React.FC = () => {
   const [studentAllResults, setStudentAllResults] = useState<Result[]>([]);
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   // 1. Fetch Classes and Subjects (Scoped to Teacher Assignment)
@@ -204,7 +204,7 @@ export const ResultsPage: React.FC = () => {
 
         const payload: Partial<Result> = {
           resultId,
-          schoolId: s.schoolId || schoolId || 'bistoland',
+          schoolId: s.schoolId || schoolId || 'default',
           studentId: s.studentId,
           classId: selectedClassId,
           subjectId: selectedSubjectId,
@@ -242,7 +242,7 @@ export const ResultsPage: React.FC = () => {
         'results',
         `${selectedClassId}_${selectedSubjectId}`,
         `${statusToSet === 'PUBLISHED' ? 'Published' : 'Saved draft'} scores for ${count} students in ${selectedSubjectId}`,
-        schoolId || 'bistoland'
+        schoolId || 'default'
       );
       
       if (statusToSet === 'PUBLISHED') {
@@ -252,7 +252,7 @@ export const ResultsPage: React.FC = () => {
           'Exam Results Published',
           `Results for ${subName} have just been published and are available in your portal.`,
           selectedClassId,
-          schoolId || 'bistoland'
+          schoolId || 'default'
         );
       }
 

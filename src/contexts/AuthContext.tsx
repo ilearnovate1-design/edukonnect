@@ -63,7 +63,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         emailLower.includes('admin') || 
         emailLower.includes('ilearnovate');
 
-      const isBistolandAdmin = emailLower.includes('bistoland');
+      const isEduKonnectAdmin = emailLower.includes('edukonnect') || isSuperAdminEmail;
 
       // Check stored preference
       let preferredPortal: UserRole | null = overrideRole || null;
@@ -89,8 +89,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             updates.approvalStatus = 'APPROVED';
             needsUpdate = true;
           }
-        } else if (preferredPortal === 'ADMIN' || isBistolandAdmin) {
-          // If the user requested Admin access or has bistoland admin credentials, elevate from PARENT to ADMIN
+        } else if (preferredPortal === 'ADMIN' || isEduKonnectAdmin) {
+          // If the user requested Admin access or has edukonnect admin credentials, elevate from PARENT to ADMIN
           if (uData.role !== 'ADMIN' && uData.role !== 'SUPER_ADMIN') {
             uData.role = 'ADMIN';
             updates.role = 'ADMIN';
@@ -105,10 +105,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           needsUpdate = true;
         }
 
-        // Ensure schoolId is present (defaulting to bistoland for customer)
+        // Ensure schoolId is present (defaulting to default for customer)
         if (!uData.schoolId) {
-          uData.schoolId = 'bistoland';
-          updates.schoolId = 'bistoland';
+          uData.schoolId = 'default';
+          updates.schoolId = 'default';
           needsUpdate = true;
         }
 
@@ -196,7 +196,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           emailLower === 'admin@edukonnect.ng' || 
           emailLower.includes('admin') || 
           emailLower.includes('ilearnovate');
-        const isBistolandAdmin = emailLower.includes('bistoland');
+        const isEduKonnectAdmin = emailLower.includes('edukonnect') || isSuperAdminEmail;
 
         let role: UserRole = 'ADMIN';
         if (isSuperAdminEmail) {
@@ -205,7 +205,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           role = overrideRole;
         } else if (preferredPortal) {
           role = preferredPortal;
-        } else if (isBistolandAdmin) {
+        } else if (isEduKonnectAdmin) {
           role = 'ADMIN';
         } else {
           // Default to ADMIN for school administration portal
@@ -219,7 +219,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           role,
           isSuperAdmin: isSuperAdminEmail,
           approvalStatus,
-          schoolId: 'bistoland',
+          schoolId: 'default',
           displayName: firebaseUser.displayName || (role === 'ADMIN' || role === 'SUPER_ADMIN' ? 'School Administrator' : 'User'),
           active: true,
           createdAt: serverTimestamp(),
@@ -249,7 +249,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role: fallbackRole,
         isSuperAdmin: isSuperAdminEmail,
         approvalStatus: 'APPROVED',
-        schoolId: 'bistoland',
+        schoolId: 'default',
         active: true,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -257,9 +257,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const switchToRole = async (newRole: UserRole, targetSchoolId: string = 'bistoland') => {
+  const switchToRole = async (newRole: UserRole, targetSchoolId: string = 'default') => {
     if (!currentUser) return;
-    const targetSchool = targetSchoolId || 'bistoland';
+    const targetSchool = targetSchoolId || 'default';
     const userDocRef = doc(db, 'users', currentUser.uid);
 
     try {
@@ -365,7 +365,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     pass: string, 
     name: string, 
     role: UserRole = 'ADMIN',
-    schoolId: string = 'bistoland'
+    schoolId: string = 'default'
   ) => {
     const res = await createUserWithEmailAndPassword(auth, email.trim(), pass);
     const userDocRef = doc(db, 'users', res.user.uid);
@@ -375,7 +375,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email: email.trim(),
       role: role,
       approvalStatus,
-      schoolId: schoolId || 'bistoland',
+      schoolId: schoolId || 'default',
       displayName: name.trim() || 'User',
       active: true,
       createdAt: serverTimestamp(),
@@ -397,14 +397,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateUserPassword = async (currentPass: string, newPass: string) => {
-    if (!currentUser || !currentUser.email) throw new Error('Not authenticated');
+    if (!currentUser || !currentUser.email) {
+      throw new Error('You must be signed in to change your password.');
+    }
+    if (!currentPass || !currentPass.trim()) {
+      throw new Error('Please enter your current password.');
+    }
+    if (!newPass || newPass.length < 6) {
+      throw new Error('New password must be at least 6 characters long.');
+    }
     
     // 1. Re-authenticate first (required for sensitive ops)
-    const credential = EmailAuthProvider.credential(currentUser.email, currentPass);
-    await reauthenticateWithCredential(currentUser, credential);
+    try {
+      const credential = EmailAuthProvider.credential(currentUser.email, currentPass.trim());
+      await reauthenticateWithCredential(currentUser, credential);
+    } catch (authErr: any) {
+      const msg = authErr?.message || authErr?.code || String(authErr);
+      if (
+        msg.includes('auth/invalid-credential') ||
+        msg.includes('auth/invalid-login-credentials') ||
+        msg.includes('auth/wrong-password')
+      ) {
+        throw new Error('The current password you entered is incorrect. Please check and try again, or send a password reset email below.');
+      }
+      if (msg.includes('auth/too-many-requests')) {
+        throw new Error('Too many unsuccessful attempts. Please wait a moment or use the reset link option below.');
+      }
+      throw new Error(authErr?.message || 'Authentication verification failed. Please check your current password.');
+    }
     
     // 2. Update password
-    await updatePassword(currentUser, newPass);
+    try {
+      await updatePassword(currentUser, newPass.trim());
+    } catch (passErr: any) {
+      const msg = passErr?.message || passErr?.code || String(passErr);
+      if (msg.includes('auth/weak-password')) {
+        throw new Error('The new password is too weak. Please use at least 6 characters.');
+      }
+      if (msg.includes('auth/requires-recent-login')) {
+        throw new Error('For security, your session has expired. Please sign out and sign in again before updating your password.');
+      }
+      throw new Error(passErr?.message || 'Failed to update password.');
+    }
   };
 
   const refreshUserProfile = async () => {
@@ -419,7 +453,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currentUser,
         appUser,
         role: appUser?.role || null,
-        schoolId: appUser?.schoolId || 'bistoland',
+        schoolId: appUser?.schoolId || 'default',
         isSuperAdmin: !!appUser?.isSuperAdmin,
         isAtLeastAdmin: appUser?.role === 'ADMIN' || !!appUser?.isSuperAdmin,
         loading,

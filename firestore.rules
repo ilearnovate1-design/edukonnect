@@ -13,9 +13,7 @@ service cloud.firestore {
         'email' in request.auth.token &&
         (
           request.auth.token.email == 'ilearnovate1@gmail.com' ||
-          request.auth.token.email == 'admin@edukonnect.ng' ||
-          request.auth.token.email.matches('(?i).*admin.*') ||
-          request.auth.token.email.matches('(?i).*ilearnovate.*')
+          request.auth.token.email == 'admin@edukonnect.ng'
         );
     }
 
@@ -42,7 +40,7 @@ service cloud.firestore {
     }
 
     function getUserSchoolId() {
-      return userExists() ? getUserData().get('schoolId', 'bistoland') : 'bistoland';
+      return userExists() ? getUserData().get('schoolId', 'default') : 'default';
     }
 
     function isApproved() {
@@ -93,9 +91,9 @@ service cloud.firestore {
     function docMatchesTenant(data) {
       return isSuperAdmin() ||
         (isApprovedOrSetup() && (
-          (!('schoolId' in data) && getUserSchoolId() == 'bistoland') ||
-          (data.get('schoolId', 'bistoland') == getUserSchoolId()) ||
-          (getUserSchoolId() == 'bistoland')
+          (!('schoolId' in data) && getUserSchoolId() == 'default') ||
+          (data.get('schoolId', 'default') == getUserSchoolId()) ||
+          (getUserSchoolId() == 'default')
         ));
     }
 
@@ -103,8 +101,8 @@ service cloud.firestore {
       return isSuperAdmin() ||
         (
           isApprovedOrSetup() && (
-            request.resource.data.get('schoolId', 'bistoland') == getUserSchoolId() ||
-            getUserSchoolId() == 'bistoland'
+            request.resource.data.get('schoolId', 'default') == getUserSchoolId() ||
+            getUserSchoolId() == 'default'
           )
         );
     }
@@ -114,8 +112,8 @@ service cloud.firestore {
         (
           isApprovedOrSetup() && docMatchesTenant(resource.data) && (
             request.resource.data.get('schoolId', getUserSchoolId()) == getUserSchoolId() ||
-            request.resource.data.get('schoolId', 'bistoland') == resource.data.get('schoolId', 'bistoland') ||
-            getUserSchoolId() == 'bistoland'
+            request.resource.data.get('schoolId', 'default') == resource.data.get('schoolId', 'default') ||
+            getUserSchoolId() == 'default'
           )
         );
     }
@@ -130,14 +128,14 @@ service cloud.firestore {
       allow create: if isAuthenticated() && isAdmin() && 
         (isSuperAdmin() || getUserData().get('approvalStatus', 'PENDING_SETUP') == 'PENDING_SETUP');
       allow update: if isAuthenticated() && (isAdmin() || isTeacher()) &&
-        (isSuperAdmin() || schoolId == getUserSchoolId() || schoolId == 'bistoland');
+        (isSuperAdmin() || schoolId == getUserSchoolId() || schoolId == 'default');
       allow delete: if isSuperAdmin() || (isAuthenticated() && isAdmin() && isApproved() && schoolId == getUserSchoolId());
     }
 
     match /schoolSettings/{docId} {
       allow read: if true;
       allow create, update: if isAuthenticated() && (isAdmin() || isTeacher()) &&
-        (isSuperAdmin() || docId == getUserSchoolId() || docId == 'default' || docId == 'bistoland' || docId == 'general');
+        (isSuperAdmin() || docId == getUserSchoolId() || docId == 'default' || docId == 'general');
       allow delete: if isSuperAdmin() || (isAuthenticated() && isAdmin() && isApproved() && docId == getUserSchoolId());
     }
 
@@ -149,8 +147,20 @@ service cloud.firestore {
     // 2. User Accounts & Identity Protection
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && (request.auth.uid == userId || isSuperAdmin());
-      allow update: if isAuthenticated() && (request.auth.uid == userId || isSuperAdmin());
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() || (
+          request.auth.uid == userId &&
+          request.resource.data.get('isSuperAdmin', false) == false &&
+          request.resource.data.get('role', 'PARENT') != 'SUPER_ADMIN'
+        )
+      );
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() || (
+          request.auth.uid == userId &&
+          (!('isSuperAdmin' in request.resource.data) || request.resource.data.isSuperAdmin == resource.data.get('isSuperAdmin', false)) &&
+          (!('role' in request.resource.data) || request.resource.data.role != 'SUPER_ADMIN' || resource.data.get('role', '') == 'SUPER_ADMIN')
+        )
+      );
       allow delete: if isSuperAdmin();
     }
 

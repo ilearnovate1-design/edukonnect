@@ -50,7 +50,7 @@ export const AttendancePage: React.FC = () => {
         let cList: SchoolClass[] = [];
         cSnap.forEach((d) => {
           const item = d.data() as SchoolClass;
-          const matches = item.schoolId ? item.schoolId === schoolId : schoolId === 'bistoland';
+          const matches = item.schoolId ? item.schoolId === schoolId : (schoolId === 'default' || !schoolId);
           if (matches) cList.push(item);
         });
 
@@ -172,7 +172,7 @@ export const AttendancePage: React.FC = () => {
       await setDoc(docRef, {
         timeOut: serverTimestamp(),
         updatedAt: serverTimestamp(),
-        schoolId: schoolId || 'bistoland',
+        schoolId: schoolId || 'default',
       }, { merge: true });
     } catch(err) {
       console.error(err);
@@ -239,7 +239,7 @@ export const AttendancePage: React.FC = () => {
 
           const payload: any = {
             attendanceId,
-            schoolId: schoolId || 'bistoland',
+            schoolId: schoolId || 'default',
             studentId: student.studentId,
             classId: selectedClassId,
             date: selectedDate,
@@ -278,7 +278,7 @@ export const AttendancePage: React.FC = () => {
         'attendance',
         `${selectedDate}_${selectedClassId}`,
         `Saved attendance for ${markedCount} pupils on ${selectedDate}`,
-        schoolId || 'bistoland'
+        schoolId || 'default'
       );
 
       setSuccessMessage(`Attendance saved successfully! ${markedCount} pupils logged for ${formatDate(selectedDate)}.`);

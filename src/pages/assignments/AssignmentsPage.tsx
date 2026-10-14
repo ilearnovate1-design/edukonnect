@@ -42,7 +42,7 @@ export const AssignmentsPage: React.FC = () => {
   const [formError, setFormError] = useState('');
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
   
   // Submissions Modal
@@ -231,7 +231,7 @@ export const AssignmentsPage: React.FC = () => {
     setFormError('');
     try {
       const aId = editingAssignment?.assignmentId || `assign-${Date.now()}`;
-      const targetSchoolId = editingAssignment?.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = editingAssignment?.schoolId || schoolId || 'default';
       const payload: Partial<Assignment> = {
         assignmentId: aId,
         schoolId: targetSchoolId,

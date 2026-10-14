@@ -7,7 +7,7 @@ export const sendNotification = async (
   title: string,
   message: string,
   type: string,
-  schoolId: string = 'bistoland'
+  schoolId: string = 'default'
 ) => {
   if (userIds.length === 0) return;
 
@@ -17,7 +17,7 @@ export const sendNotification = async (
     const ref = doc(db, 'notifications', notifId);
     batch.set(ref, {
       notificationId: notifId,
-      schoolId: schoolId || 'bistoland',
+      schoolId: schoolId || 'default',
       userId: uid,
       title,
       message,
@@ -39,7 +39,7 @@ export const broadcastAnnouncementNotifications = async (
   title: string,
   message: string,
   classId?: string,
-  schoolId: string = 'bistoland'
+  schoolId: string = 'default'
 ) => {
   try {
     const targetUserIds = new Set<string>();

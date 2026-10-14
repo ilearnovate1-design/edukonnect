@@ -35,7 +35,7 @@ export const ClassesPage: React.FC = () => {
   const [formError, setFormError] = useState('');
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   const fetchData = async () => {
@@ -132,7 +132,7 @@ export const ClassesPage: React.FC = () => {
     try {
       const cId = editingClass?.classId || `class-${name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
       const classDocRef = doc(db, 'classes', cId);
-      const targetSchoolId = editingClass?.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = editingClass?.schoolId || schoolId || 'default';
 
       const payload: any = {
         classId: cId,

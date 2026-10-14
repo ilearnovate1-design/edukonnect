@@ -37,7 +37,7 @@ export const saveStudentEvaluation = async (
     docRef,
     {
       ...evaluation,
-      schoolId: evaluation.schoolId || 'bistoland',
+      schoolId: evaluation.schoolId || 'default',
       evaluationId: evalId,
       updatedAt: serverTimestamp(),
     },

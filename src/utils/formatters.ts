@@ -175,11 +175,11 @@ export const logAudit = async (
   entityType: string,
   entityId: string,
   description: string,
-  schoolId: string = 'bistoland'
+  schoolId: string = 'default'
 ) => {
   try {
     await addDoc(collection(db, 'auditLogs'), {
-      schoolId: schoolId || 'bistoland',
+      schoolId: schoolId || 'default',
       userId,
       action,
       entityType,

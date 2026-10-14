@@ -109,7 +109,7 @@ export const FeesPage: React.FC = () => {
     if (!itemSchoolId) return true;
     if (isSuperAdmin) return true;
     if (itemSchoolId === schoolId) return true;
-    if (schoolId === 'bistoland' || !schoolId) return itemSchoolId === 'bistoland';
+    if (schoolId === 'default' || !schoolId) return itemSchoolId === 'default';
     return false;
   };
 
@@ -299,7 +299,7 @@ export const FeesPage: React.FC = () => {
 
     setIsSavingStructure(true);
     try {
-      const targetSchoolId = editingStructure?.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = editingStructure?.schoolId || schoolId || 'default';
       const structId = editingStructure
         ? editingStructure.feeStructureId
         : `fee-${structClassId}-${structName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}`;
@@ -377,7 +377,7 @@ export const FeesPage: React.FC = () => {
 
     setIsSavingQuickAssign(true);
     try {
-      const targetSchoolId = quickAssignStructure.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = quickAssignStructure.schoolId || schoolId || 'default';
       const docRef = doc(db, 'feeStructures', quickAssignStructure.feeStructureId);
 
       const updates: any = {
@@ -426,7 +426,7 @@ export const FeesPage: React.FC = () => {
 
     setIsDeletingStructure(true);
     try {
-      const targetSchoolId = deletingStructure.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = deletingStructure.schoolId || schoolId || 'default';
       const structId = deletingStructure.feeStructureId;
       await deleteDoc(doc(db, 'feeStructures', structId));
 
@@ -503,7 +503,7 @@ export const FeesPage: React.FC = () => {
 
       const receiptNumber = generateReceiptNumber();
       const paymentId = `pay-${Date.now()}`;
-      const targetSchoolId = selectedStudent.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = selectedStudent.schoolId || schoolId || 'default';
 
       const payload: any = {
         paymentId,

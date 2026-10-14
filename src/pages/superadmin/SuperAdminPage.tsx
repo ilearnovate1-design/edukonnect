@@ -184,9 +184,9 @@ export const SuperAdminPage: React.FC = () => {
     try {
       await deleteSchool(targetId, purgeSchoolDataOnDelete, currentUser?.uid || 'admin');
       
-      // If we deleted the active school context, switch back to bistoland
+      // If we deleted the active school context, switch back to default
       if (currentSchoolId === targetId) {
-        setSchoolId('bistoland');
+        setSchoolId('default');
       }
 
       setShowDeleteSchoolModal(false);
@@ -610,7 +610,7 @@ export const SuperAdminPage: React.FC = () => {
                     <li>All <strong>students</strong>, <strong>parents</strong>, and <strong>teachers</strong> will be deleted.</li>
                     <li>All <strong>results</strong>, <strong>attendance</strong>, and <strong>fees</strong> will be deleted.</li>
                     <li>All <strong>user accounts</strong> (except your own) will be removed.</li>
-                    <li>The <strong>'bistoland'</strong> tenant will be preserved but its data cleared.</li>
+                    <li>The <strong>'default'</strong> EduKonnect tenant will be preserved but its data cleared.</li>
                     <li>Platform pricing settings will remain intact.</li>
                   </ul>
                 </div>

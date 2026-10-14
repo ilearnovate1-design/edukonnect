@@ -133,11 +133,11 @@ export const Navbar: React.FC<NavbarProps> = ({
               type="button"
               id="nav-quick-admin-btn"
               onClick={async () => {
-                await switchToRole('ADMIN', 'bistoland');
+                await switchToRole('ADMIN', 'default');
                 onNavigate('dashboard');
               }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-all shadow-2xs cursor-pointer"
-              title="Access Bistoland Administrator Portal"
+              title="Access EduKonnect Administrator Portal"
             >
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" />
               <span>Admin Portal</span>
@@ -186,7 +186,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       Role: {appUser?.role}
                     </span>
                     <span className="text-[10px] text-slate-400 font-mono">
-                      {appUser?.schoolId || 'bistoland'}
+                      {appUser?.schoolId || 'default'}
                     </span>
                   </div>
                 </div>
@@ -197,7 +197,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     id="dropdown-switch-admin-btn"
                     onClick={async () => {
                       setShowUserMenu(false);
-                      await switchToRole('ADMIN', 'bistoland');
+                      await switchToRole('ADMIN', 'default');
                       onNavigate('dashboard');
                     }}
                     className="w-full flex items-center gap-2 px-3 py-2 text-xs text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-left font-bold my-1 border border-emerald-200 cursor-pointer"
@@ -210,7 +210,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     type="button"
                     onClick={async () => {
                       setShowUserMenu(false);
-                      await switchToRole('PARENT', 'bistoland');
+                      await switchToRole('PARENT', 'default');
                       onNavigate('dashboard');
                     }}
                     className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 rounded-lg text-left my-1 cursor-pointer"

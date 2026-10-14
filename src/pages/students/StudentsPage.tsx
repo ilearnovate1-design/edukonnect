@@ -43,7 +43,7 @@ export const StudentsPage: React.FC = () => {
   const [archiveLoading, setArchiveLoading] = useState(false);
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   const fetchAllData = async () => {
@@ -112,7 +112,7 @@ export const StudentsPage: React.FC = () => {
         'students',
         studentToArchive.studentId,
         `Archived student ${studentToArchive.firstName} ${studentToArchive.lastName}`,
-        studentToArchive.schoolId || schoolId || 'bistoland'
+        studentToArchive.schoolId || schoolId || 'default'
       );
       setStudentToArchive(null);
       await fetchAllData();

@@ -38,7 +38,7 @@ export const ParentsPage: React.FC = () => {
   const [formError, setFormError] = useState('');
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   const generatePassword = () => {
@@ -126,7 +126,7 @@ export const ParentsPage: React.FC = () => {
     try {
       const pId = editingParent?.parentId || `parent-${Date.now()}`;
       const parentDocRef = doc(db, 'parents', pId);
-      const targetSchoolId = editingParent?.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = editingParent?.schoolId || schoolId || 'default';
 
       const payload: any = {
         parentId: pId,

@@ -19,17 +19,16 @@ service firebase.storage {
     function getUserSchoolId() {
       return isAuthenticated() && firestore.exists(/databases/ai-studio-schoolmanagement-f22373cb-fd74-43c2-acfb-7e771274cdb4/documents/users/$(request.auth.uid)) && 'schoolId' in getUserData() && getUserData().schoolId != null
         ? getUserData().schoolId
-        : 'bistoland';
+        : 'default';
     }
 
     function isSuperAdmin() {
       return isAuthenticated() && (
         (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email != null && (
           request.auth.token.email.lower() == 'ilearnovate1@gmail.com' ||
-          request.auth.token.email.lower().matches('.*admin.*') ||
-          request.auth.token.email.lower().matches('.*ilearnovate.*')
+          request.auth.token.email.lower() == 'admin@edukonnect.ng'
         )) ||
-        getUserRole() == 'ADMIN'
+        getUserRole() == 'SUPER_ADMIN'
       );
     }
     

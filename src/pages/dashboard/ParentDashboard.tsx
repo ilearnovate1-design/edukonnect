@@ -29,7 +29,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   const [isSwitchingToAdmin, setIsSwitchingToAdmin] = useState(false);
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   const [children, setChildren] = useState<Student[]>([]);
@@ -309,7 +309,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   const handleSwitchToAdmin = async () => {
     setIsSwitchingToAdmin(true);
     try {
-      await switchToRole('ADMIN', 'bistoland');
+      await switchToRole('ADMIN', schoolId || 'default');
       onNavigate('dashboard');
     } catch (err) {
       console.error('Failed to switch to admin:', err);
@@ -329,25 +329,25 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-bold text-slate-900">
-                School Administrator or Staff Access for Bistoland School
+                School Administrator or Staff Access
               </h3>
               <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-800 rounded-full border border-emerald-200">
                 Admin Notice
               </span>
             </div>
             <p className="text-xs text-slate-600 mt-1 leading-relaxed max-w-2xl">
-              Are you the school administrator, principal, or proprietor of <strong>Bistoland School</strong> currently viewing the Guardian/Parent portal? Click below to immediately enter the complete Administrator Portal with full privileges (Students, Attendance, Fees, Results, Classes, Settings).
+              Are you the school administrator, principal, or proprietor of <strong>{settings.schoolName || 'EduKonnect Academy'}</strong> currently viewing the Guardian/Parent portal? Click below to immediately enter the complete Administrator Portal with full privileges (Students, Attendance, Fees, Results, Classes, Settings).
             </p>
           </div>
         </div>
         <Button
-          id="switch-to-bistoland-admin-btn"
+          id="switch-to-admin-portal-btn"
           onClick={handleSwitchToAdmin}
           isLoading={isSwitchingToAdmin}
           className="shrink-0 bg-emerald-700 hover:bg-emerald-800 text-white font-bold shadow-xs whitespace-nowrap cursor-pointer"
         >
           <ShieldCheck className="w-4 h-4 mr-1.5" />
-          Access Bistoland Admin Portal
+          Access Edukonnect Admin Portal
         </Button>
       </div>
 

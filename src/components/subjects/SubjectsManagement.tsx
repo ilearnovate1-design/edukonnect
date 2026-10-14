@@ -69,7 +69,7 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
   const [seedSuccess, setSeedSuccess] = useState('');
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   const fetchSubjectsAndTeachers = async () => {
@@ -151,9 +151,9 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
     setSaving(true);
     setFormError('');
     try {
-      const targetSchoolId = editingSubject?.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = editingSubject?.schoolId || schoolId || 'default';
       const cleanSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-      const subId = editingSubject?.subjectId || (targetSchoolId === 'bistoland' ? `sub-${cleanSlug}` : `sub-${targetSchoolId}-${cleanSlug}`);
+      const subId = editingSubject?.subjectId || (targetSchoolId === 'default' ? `sub-${cleanSlug}` : `sub-${targetSchoolId}-${cleanSlug}`);
       const docRef = doc(db, 'subjects', subId);
 
       const payload: Partial<Subject> = {
@@ -214,7 +214,7 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
         'subjects',
         sub.subjectId,
         `Toggled subject ${sub.name} to ${newStatus ? 'active' : 'inactive'}`,
-        sub.schoolId || schoolId || 'bistoland'
+        sub.schoolId || schoolId || 'default'
       );
     } catch (err) {
       console.error('Error toggling subject status:', err);
@@ -233,7 +233,7 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
         'subjects',
         deletingSubject.subjectId,
         `Deleted subject ${deletingSubject.name}`,
-        deletingSubject.schoolId || schoolId || 'bistoland'
+        deletingSubject.schoolId || schoolId || 'default'
       );
 
       setDeletingSubject(null);
@@ -250,7 +250,7 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
     setSeeding(true);
     setSeedSuccess('');
     try {
-      const targetSchoolId = schoolId || 'bistoland';
+      const targetSchoolId = schoolId || 'default';
       const result = await seedStandardCurriculumForSchool(targetSchoolId);
 
       await logAudit(

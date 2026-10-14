@@ -44,7 +44,7 @@ export const DEFAULT_REPORT_TEMPLATE: ReportTemplateSettings = {
   showOfficialSeal: true,
 };
 
-export const DEFAULT_TENANT_ID = 'bistoland';
+export const DEFAULT_TENANT_ID = 'default';
 
 export const STANDARD_CURRICULUM_SUBJECTS = [
   { name: 'Mathematics', code: 'MTH', category: 'Core' },
@@ -158,7 +158,7 @@ export const getSchoolSettings = async (schoolId: string = DEFAULT_TENANT_ID): P
       };
     }
 
-    // 2. If target is bistoland or default, check legacy schoolSettings/general
+    // 2. If target is default, check legacy schoolSettings/general
     if (targetId === DEFAULT_TENANT_ID) {
       const legacyRef = doc(db, 'schoolSettings', 'general');
       const legacySnap: any = await fetchWithTimeout(legacyRef);
@@ -196,7 +196,7 @@ export const getSchoolSettings = async (schoolId: string = DEFAULT_TENANT_ID): P
 };
 
 /**
- * Save school settings for a specific schoolId, keeping legacy schoolSettings/general synchronized for bistoland
+ * Save school settings for a specific schoolId, keeping legacy schoolSettings/general synchronized for default
  */
 export const saveSchoolSettings = async (
   settings: Partial<SchoolSettings>,
@@ -225,7 +225,7 @@ export const saveSchoolSettings = async (
     });
   }
 
-  // 2. If targetId is bistoland, also sync to legacy doc for zero-disruption compatibility
+  // 2. If targetId is default, also sync to general doc for zero-disruption compatibility
   if (targetId === DEFAULT_TENANT_ID) {
     try {
       const legacyRef = doc(db, 'schoolSettings', 'general');
@@ -244,7 +244,7 @@ export const resolveSchoolByDomain = async (hostname: string): Promise<string> =
 
   const cleanHost = hostname.toLowerCase().trim();
 
-  // If subdomain pattern: e.g. bistoland.edukonnect.ng -> bistoland
+  // If subdomain pattern: e.g. academy.edukonnect.ng -> academy
   const parts = cleanHost.split('.');
   if (parts.length > 2) {
     const sub = parts[0];

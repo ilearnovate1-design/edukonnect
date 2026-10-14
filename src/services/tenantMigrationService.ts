@@ -68,7 +68,7 @@ export async function runTenantDryRunVerification(): Promise<DryRunReport> {
     const classSnap = await getDocs(collection(db, 'classes'));
     classSnap.forEach((docSnap) => {
       const data = docSnap.data();
-      const school = data.schoolId || 'bistoland';
+      const school = data.schoolId || 'default';
       classTenantMap.set(docSnap.id, school);
     });
   } catch (err) {
@@ -80,7 +80,7 @@ export async function runTenantDryRunVerification(): Promise<DryRunReport> {
     const studentSnap = await getDocs(collection(db, 'students'));
     studentSnap.forEach((docSnap) => {
       const data = docSnap.data();
-      const school = data.schoolId || 'bistoland';
+      const school = data.schoolId || 'default';
       studentTenantMap.set(docSnap.id, school);
     });
   } catch (err) {
@@ -105,14 +105,14 @@ export async function runTenantDryRunVerification(): Promise<DryRunReport> {
           tenantDistribution[schoolId] = (tenantDistribution[schoolId] || 0) + 1;
         } else {
           missing++;
-          distinct['[MISSING -> bistoland]'] = (distinct['[MISSING -> bistoland]'] || 0) + 1;
-          tenantDistribution['bistoland (defaulted)'] = (tenantDistribution['bistoland (defaulted)'] || 0) + 1;
+          distinct['[MISSING -> default]'] = (distinct['[MISSING -> default]'] || 0) + 1;
+          tenantDistribution['default (defaulted)'] = (tenantDistribution['default (defaulted)'] || 0) + 1;
         }
 
         // Cross-entity reference checks
         if (colName === 'students' && data.classId) {
           const expectedClassTenant = classTenantMap.get(data.classId);
-          const studentTenant = schoolId || 'bistoland';
+          const studentTenant = schoolId || 'default';
           if (expectedClassTenant && expectedClassTenant !== studentTenant) {
             inconsistencies.push({
               collection: colName,
@@ -125,7 +125,7 @@ export async function runTenantDryRunVerification(): Promise<DryRunReport> {
 
         if ((colName === 'results' || colName === 'payments') && data.studentId) {
           const expectedStudentTenant = studentTenantMap.get(data.studentId);
-          const recordTenant = schoolId || 'bistoland';
+          const recordTenant = schoolId || 'default';
           if (expectedStudentTenant && expectedStudentTenant !== recordTenant) {
             inconsistencies.push({
               collection: colName,
@@ -170,7 +170,7 @@ export async function runTenantDryRunVerification(): Promise<DryRunReport> {
     impactSummary = `Found ${inconsistencies.length} cross-tenant reference inconsistencies that should be verified.`;
   } else if (totalMissing > 0) {
     status = 'NEEDS_MIGRATION';
-    impactSummary = `${totalMissing} legacy records currently lack a "schoolId" field and will automatically resolve to "bistoland" for backward compatibility until migrated.`;
+    impactSummary = `${totalMissing} legacy records currently lack a "schoolId" field and will automatically resolve to "default" for backward compatibility until migrated.`;
   }
 
   return {
@@ -183,7 +183,7 @@ export async function runTenantDryRunVerification(): Promise<DryRunReport> {
     tenantDistribution,
     summary: {
       status,
-      recommendedDefaultTenant: 'bistoland',
+      recommendedDefaultTenant: 'default',
       impactSummary,
     },
   };

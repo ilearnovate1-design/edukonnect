@@ -205,10 +205,10 @@ export default function App() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => switchToRole('ADMIN', 'bistoland')}
+                onClick={() => switchToRole('ADMIN')}
                 className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
               >
-                Switch to Bistoland Admin Portal
+                Switch to Edukonnect Admin Portal
               </Button>
             </div>
           </div>
@@ -227,10 +227,10 @@ export default function App() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => switchToRole('ADMIN', 'bistoland')}
+                onClick={() => switchToRole('ADMIN')}
                 className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
               >
-                Switch to Bistoland Admin Portal
+                Switch to Edukonnect Admin Portal
               </Button>
             </div>
           </div>
@@ -257,10 +257,10 @@ export default function App() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => switchToRole('ADMIN', 'bistoland')}
+                  onClick={() => switchToRole('ADMIN')}
                   className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
                 >
-                  Switch to Bistoland Admin Portal
+                  Switch to Edukonnect Admin Portal
                 </Button>
               </div>
             </div>
@@ -300,10 +300,10 @@ export default function App() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => switchToRole('ADMIN', 'bistoland')}
+                onClick={() => switchToRole('ADMIN')}
                 className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
               >
-                Switch to Bistoland Admin Portal
+                Switch to Edukonnect Admin Portal
               </Button>
             </div>
           </div>
@@ -322,10 +322,10 @@ export default function App() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => switchToRole('ADMIN', 'bistoland')}
+                onClick={() => switchToRole('ADMIN')}
                 className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
               >
-                Switch to Bistoland Admin Portal
+                Switch to Edukonnect Admin Portal
               </Button>
             </div>
           </div>

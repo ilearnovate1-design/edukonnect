@@ -121,7 +121,7 @@ export const SubmitWorkModal: React.FC<SubmitWorkModalProps> = ({
       const submissionId = submission?.submissionId || `sub_${assignment.assignmentId}_${student.studentId}`;
       const docRef = doc(db, 'submissions', submissionId);
       const isUpdate = submission?.status === 'SUBMITTED';
-      const targetSchoolId = assignment.schoolId || student.schoolId || 'bistoland';
+      const targetSchoolId = assignment.schoolId || student.schoolId || 'default';
       
       const payload: Partial<Submission> = {
         submissionId,

@@ -34,7 +34,7 @@ const MANAGEABLE_COLLECTIONS: { name: string; label: string; canPurge: boolean }
 /**
  * Fetch document counts for collections to display to administrator for a given schoolId
  */
-export const getDatabaseStats = async (schoolId: string = 'bistoland'): Promise<CollectionStat[]> => {
+export const getDatabaseStats = async (schoolId: string = 'default'): Promise<CollectionStat[]> => {
   const stats: CollectionStat[] = [];
   for (const item of MANAGEABLE_COLLECTIONS) {
     try {
@@ -71,7 +71,7 @@ export const getDatabaseStats = async (schoolId: string = 'bistoland'): Promise<
 export const purgeCollections = async (
   collectionNames: string[], 
   adminUid: string,
-  schoolId: string = 'bistoland'
+  schoolId: string = 'default'
 ): Promise<{ success: boolean; deletedCount: number }> => {
   let totalDeleted = 0;
 
@@ -125,7 +125,7 @@ export const purgeCollections = async (
 /**
  * Export school data as a downloadable JSON backup for a given schoolId
  */
-export const exportSchoolDataBackup = async (schoolId: string = 'bistoland'): Promise<void> => {
+export const exportSchoolDataBackup = async (schoolId: string = 'default'): Promise<void> => {
   const backupData: Record<string, any[]> = {
     schoolId: [schoolId],
     exportedAt: [new Date().toISOString()],
@@ -172,7 +172,7 @@ export const generateTestRecords = async (
     schoolId?: string;
   }
 ): Promise<{ success: boolean; createdCount: number }> => {
-  const targetSchoolId = options?.schoolId || 'bistoland';
+  const targetSchoolId = options?.schoolId || 'default';
   const updateProgress = (msg: string) => {
     if (options?.onProgress) options.onProgress(msg);
   };

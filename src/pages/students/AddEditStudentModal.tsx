@@ -143,7 +143,7 @@ export const AddEditStudentModal: React.FC<AddEditStudentModalProps> = ({
 
       const sId = student?.studentId || admissionNumber.trim().replace(/\s+/g, '-');
       const studentDocRef = doc(db, 'students', sId);
-      const targetSchoolId = student?.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = student?.schoolId || schoolId || 'default';
 
       const payload: any = {
         studentId: sId,

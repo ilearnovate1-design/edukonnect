@@ -63,7 +63,7 @@ async function runDryRunVerification() {
   try {
     const classSnap = await getDocs(collection(db, 'classes'));
     classSnap.forEach((d) => {
-      classTenantMap.set(d.id, d.data().schoolId || 'bistoland');
+      classTenantMap.set(d.id, d.data().schoolId || 'default');
     });
   } catch (e) {
     // Continue
@@ -73,7 +73,7 @@ async function runDryRunVerification() {
   try {
     const studentSnap = await getDocs(collection(db, 'students'));
     studentSnap.forEach((d) => {
-      studentTenantMap.set(d.id, d.data().schoolId || 'bistoland');
+      studentTenantMap.set(d.id, d.data().schoolId || 'default');
     });
   } catch (e) {
     // Continue
@@ -102,14 +102,14 @@ async function runDryRunVerification() {
           overallTenants[schoolId] = (overallTenants[schoolId] || 0) + 1;
         } else {
           missing++;
-          tenants['(missing -> bistoland)'] = (tenants['(missing -> bistoland)'] || 0) + 1;
-          overallTenants['bistoland (default)'] = (overallTenants['bistoland (default)'] || 0) + 1;
+          tenants['(missing -> default)'] = (tenants['(missing -> default)'] || 0) + 1;
+          overallTenants['default (default)'] = (overallTenants['default (default)'] || 0) + 1;
         }
 
         // Cross-tenant checks
         if (col === 'students' && data.classId) {
           const classTenant = classTenantMap.get(data.classId);
-          const studentTenant = schoolId || 'bistoland';
+          const studentTenant = schoolId || 'default';
           if (classTenant && classTenant !== studentTenant) {
             inconsistencies.push({
               col,
@@ -180,7 +180,7 @@ async function runDryRunVerification() {
   console.log('================================================================');
   console.log(`Total Documents Scanned:    ${totalDocs}`);
   console.log(`Explicitly Tagged:          ${totalTagged} (${totalDocs > 0 ? ((totalTagged / totalDocs) * 100).toFixed(1) : 0}%)`);
-  console.log(`Missing schoolId:           ${totalMissing} (will default to 'bistoland' safely)`);
+  console.log(`Missing schoolId:           ${totalMissing} (will default to 'default' safely)`);
   console.log('\nTenant Document Distribution:');
   for (const [tenant, count] of Object.entries(overallTenants)) {
     console.log(`  - ${tenant.padEnd(25)}: ${count} documents`);
@@ -199,7 +199,7 @@ async function runDryRunVerification() {
   if (totalMissing === 0) {
     console.log('  STATUS: [READY] All documents contain explicit schoolId tags.');
   } else {
-    console.log(`  STATUS: [COMPATIBLE] The backward-compatibility layer safely defaults the ${totalMissing} legacy records to "bistoland".`);
+    console.log(`  STATUS: [COMPATIBLE] The backward-compatibility layer safely defaults the ${totalMissing} legacy records to "default".`);
     console.log('  No live data was modified during this dry run.');
   }
   console.log('================================================================\n');

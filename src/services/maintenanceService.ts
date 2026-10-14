@@ -69,11 +69,11 @@ export const purgeAllPlatformData = async (adminUid: string): Promise<{ success:
     if (deletedUsers > 0) await userBatch.commit();
 
     // 3. Clear schools (optional? The user asked to clear "all test data")
-    // We'll keep 'bistoland' as the default tenant but clear its custom settings if any
+    // We'll keep 'default' as the default tenant but clear its custom settings if any
     const schoolsSnap = await getDocs(collection(db, 'schools'));
     const schoolBatch = writeBatch(db);
     schoolsSnap.docs.forEach((d) => {
-      if (d.id !== 'bistoland') {
+      if (d.id !== 'default') {
         schoolBatch.delete(d.ref);
       }
     });

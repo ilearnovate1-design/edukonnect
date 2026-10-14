@@ -35,7 +35,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
-  // Resolve schoolId: First priority is user's assigned schoolId. Second is domain hostname. Fallback is bistoland.
+  // Resolve schoolId: First priority is user's assigned schoolId. Second is domain hostname. Fallback is DEFAULT_TENANT_ID.
   useEffect(() => {
     let isMounted = true;
     const determineSchoolId = async () => {

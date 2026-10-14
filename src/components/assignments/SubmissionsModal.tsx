@@ -65,7 +65,7 @@ export const SubmissionsModal: React.FC<SubmissionsModalProps> = ({
       const submissionId = existingSub?.submissionId || `sub_${assignment.assignmentId}_${studentId}`;
       const docRef = doc(db, 'submissions', submissionId);
       
-      const targetSchoolId = assignment.schoolId || 'bistoland';
+      const targetSchoolId = assignment.schoolId || 'default';
       const payload: Partial<Submission> = {
         submissionId,
         schoolId: targetSchoolId,

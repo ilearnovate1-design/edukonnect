@@ -39,7 +39,7 @@ export const TeachersPage: React.FC = () => {
   const [formError, setFormError] = useState('');
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   const generatePassword = () => {
@@ -136,7 +136,7 @@ export const TeachersPage: React.FC = () => {
     try {
       const tId = editingTeacher?.teacherId || `teacher-${Date.now()}`;
       const teacherDocRef = doc(db, 'teachers', tId);
-      const targetSchoolId = editingTeacher?.schoolId || schoolId || 'bistoland';
+      const targetSchoolId = editingTeacher?.schoolId || schoolId || 'default';
 
       const payload: any = {
         teacherId: tId,

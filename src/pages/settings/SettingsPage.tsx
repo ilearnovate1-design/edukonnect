@@ -27,13 +27,14 @@ import {
   Check,
   UserCheck,
   ShieldCheck,
-  Search
+  Search,
+  Mail
 } from 'lucide-react';
 import { logAudit } from '../../utils/formatters';
 import { 
   getDatabaseStats, 
   purgeCollections, 
-  generateTestRecords,
+  generateTestRecords, 
   exportSchoolDataBackup,
   CollectionStat 
 } from '../../services/dataManagement';
@@ -42,7 +43,7 @@ import { runTenantDryRunVerification, DryRunReport } from '../../services/tenant
 
 export const SettingsPage: React.FC = () => {
   const { settings, updateSettings, schoolId } = useSchool();
-  const { currentUser, role, isAtLeastAdmin, updateUserPassword } = useAuth();
+  const { currentUser, role, isAtLeastAdmin, updateUserPassword, resetPassword } = useAuth();
 
   // Active tab: teachers default to 'report_template', admins can switch
   const [activeTab, setActiveTab] = useState<'report_template' | 'general_profile' | 'database' | 'security'>('report_template');
@@ -54,6 +55,8 @@ export const SettingsPage: React.FC = () => {
   const [passwordError, setPasswordError] = useState('');
   const [passwordSuccess, setPasswordSuccess] = useState('');
   const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [isSendingResetEmail, setIsSendingResetEmail] = useState(false);
+  const [resetEmailSuccess, setResetEmailSuccess] = useState('');
 
   // General Institutional Settings
   const [schoolName, setSchoolName] = useState(settings.schoolName);
@@ -403,7 +406,7 @@ export const SettingsPage: React.FC = () => {
 
   const handleExecuteDeleteSchool = async (e: React.FormEvent) => {
     e.preventDefault();
-    const targetId = (schoolId || 'bistoland').toLowerCase().trim();
+    const targetId = (schoolId || 'default').toLowerCase().trim();
     const isConfirmed = deleteSchoolConfirmText.trim().toLowerCase() === targetId ||
                         deleteSchoolConfirmText.trim().toUpperCase() === 'DELETE';
 
@@ -430,20 +433,46 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
+  const handleSendResetEmail = async () => {
+    if (!currentUser?.email) {
+      setPasswordError('No email associated with current user account.');
+      return;
+    }
+    setIsSendingResetEmail(true);
+    setPasswordError('');
+    setPasswordSuccess('');
+    setResetEmailSuccess('');
+
+    try {
+      await resetPassword(currentUser.email);
+      setResetEmailSuccess(`Password reset email sent to ${currentUser.email}! Please check your inbox or spam folder.`);
+    } catch (err: any) {
+      console.warn('Password reset notice:', err?.message || err);
+      setPasswordError(err?.message || 'Failed to send password reset email. Please try again.');
+    } finally {
+      setIsSendingResetEmail(false);
+    }
+  };
+
   const handlePasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentPassword) {
+      setPasswordError('Please enter your current password.');
+      return;
+    }
     if (newPassword !== confirmPassword) {
-      setPasswordError('Passwords do not match');
+      setPasswordError('New passwords do not match. Please verify.');
       return;
     }
     if (newPassword.length < 6) {
-      setPasswordError('Password must be at least 6 characters');
+      setPasswordError('New password must be at least 6 characters.');
       return;
     }
 
     setIsChangingPassword(true);
     setPasswordError('');
     setPasswordSuccess('');
+    setResetEmailSuccess('');
 
     try {
       await updateUserPassword(currentPassword, newPassword);
@@ -452,12 +481,8 @@ export const SettingsPage: React.FC = () => {
       setNewPassword('');
       setConfirmPassword('');
     } catch (err: any) {
-      console.error('Password update failed:', err);
-      if (err.code === 'auth/wrong-password') {
-        setPasswordError('Current password is incorrect');
-      } else {
-        setPasswordError(err.message || 'Failed to update password');
-      }
+      console.warn('Password update notice:', err?.message || err);
+      setPasswordError(err?.message || 'Failed to update password. Please verify your current password.');
     } finally {
       setIsChangingPassword(false);
     }
@@ -1189,28 +1214,65 @@ export const SettingsPage: React.FC = () => {
           <CardBody className="p-6">
             <form onSubmit={handlePasswordChange} className="max-w-md space-y-4">
               {passwordError && (
-                <div className="p-3 text-xs bg-rose-50 border border-rose-200 text-rose-700 rounded-lg flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4" />
-                  {passwordError}
+                <div className="p-3 text-xs bg-rose-50 border border-rose-200 text-rose-700 rounded-lg flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div>
+                    <span>{passwordError}</span>
+                    {passwordError.toLowerCase().includes('incorrect') && currentUser?.email && (
+                      <div className="mt-1.5">
+                        <button
+                          type="button"
+                          onClick={handleSendResetEmail}
+                          disabled={isSendingResetEmail}
+                          className="font-bold underline hover:text-rose-900 cursor-pointer text-xs flex items-center gap-1"
+                        >
+                          <Mail className="w-3.5 h-3.5" />
+                          {isSendingResetEmail ? 'Sending reset link...' : `Forgot password? Send reset link to ${currentUser.email}`}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
               {passwordSuccess && (
                 <div className="p-3 text-xs bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4" />
-                  {passwordSuccess}
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>{passwordSuccess}</span>
+                </div>
+              )}
+              {resetEmailSuccess && (
+                <div className="p-3 text-xs bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg flex items-start gap-2">
+                  <Mail className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                  <span>{resetEmailSuccess}</span>
                 </div>
               )}
 
-              <Input
-                id="current-password"
-                type="password"
-                label="Current Password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                required
-                placeholder="••••••••"
-                helperText="Required to verify it's you"
-              />
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="current-password" className="text-sm font-medium text-slate-700">
+                    Current Password
+                  </label>
+                  {currentUser?.email && (
+                    <button
+                      type="button"
+                      onClick={handleSendResetEmail}
+                      disabled={isSendingResetEmail}
+                      className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 underline cursor-pointer"
+                    >
+                      {isSendingResetEmail ? 'Sending...' : 'Forgot password?'}
+                    </button>
+                  )}
+                </div>
+                <Input
+                  id="current-password"
+                  type="password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  required
+                  placeholder="••••••••"
+                  helperText="Required to verify your identity before changes"
+                />
+              </div>
 
               <div className="pt-2 border-t border-slate-100 space-y-4">
                 <Input
@@ -1247,15 +1309,28 @@ export const SettingsPage: React.FC = () => {
               </div>
             </form>
 
-            <div className="mt-8 p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-              <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
-                <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                Password Policy
+            <div className="mt-8 p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <span>Password Security & Self-Service</span>
+                </div>
+                {currentUser?.email && (
+                  <button
+                    type="button"
+                    onClick={handleSendResetEmail}
+                    disabled={isSendingResetEmail}
+                    className="text-xs font-bold text-emerald-700 hover:text-emerald-900 flex items-center gap-1 cursor-pointer bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200"
+                  >
+                    <Mail className="w-3.5 h-3.5" />
+                    <span>Send Reset Email</span>
+                  </button>
+                )}
               </div>
               <ul className="text-xs text-slate-500 list-disc pl-4 space-y-1">
                 <li>Passwords must be at least 6 characters long.</li>
                 <li>Avoid using easily guessable information like your name or birthdate.</li>
-                <li>If you forget your password, use the "Reset Password" link on the login page.</li>
+                <li>If you do not remember your current password, click <strong>Send Reset Email</strong> to receive a direct password reset link in your email inbox ({currentUser?.email}).</li>
               </ul>
             </div>
           </CardBody>

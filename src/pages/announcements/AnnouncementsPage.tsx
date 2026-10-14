@@ -31,7 +31,7 @@ export const AnnouncementsPage: React.FC = () => {
   const [formError, setFormError] = useState('');
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   const fetchData = async () => {
@@ -79,7 +79,7 @@ export const AnnouncementsPage: React.FC = () => {
     setFormError('');
     try {
       const aId = `ann-${Date.now()}`;
-      const targetSchoolId = schoolId || 'bistoland';
+      const targetSchoolId = schoolId || 'default';
       const payload: any = {
         announcementId: aId,
         schoolId: targetSchoolId,
