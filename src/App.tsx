@@ -29,7 +29,7 @@ import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firesto
 import { db, testFirestoreConnection } from './services/firebase';
 
 export default function App() {
-  const { currentUser, appUser, role, isSuperAdmin, isAtLeastAdmin, loading: authLoading, logout } = useAuth();
+  const { currentUser, appUser, role, isSuperAdmin, isAtLeastAdmin, loading: authLoading, logout, switchToRole } = useAuth();
   const { settings, loading: schoolLoading, isConfigured } = useSchool();
 
   const [currentPage, setCurrentPage] = useState<string>('dashboard');
@@ -201,6 +201,16 @@ export default function App() {
           <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
             <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
             <p className="text-xs text-slate-500 mt-1">Please view your children on the Home Dashboard.</p>
+            <div className="mt-4">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => switchToRole('ADMIN', 'bistoland')}
+                className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
+              >
+                Switch to Bistoland Admin Portal
+              </Button>
+            </div>
           </div>
         ) : (
           <StudentsPage />
@@ -213,6 +223,16 @@ export default function App() {
           <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
             <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
             <p className="text-xs text-slate-500 mt-1">Daily attendance management is restricted to staff.</p>
+            <div className="mt-4">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => switchToRole('ADMIN', 'bistoland')}
+                className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
+              >
+                Switch to Bistoland Admin Portal
+              </Button>
+            </div>
           </div>
         ) : (
           <AttendancePage />
@@ -233,6 +253,16 @@ export default function App() {
             <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
               <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
               <p className="text-xs text-slate-500 mt-1">Financial records and bursary tariffs are restricted to school administrators.</p>
+              <div className="mt-4">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => switchToRole('ADMIN', 'bistoland')}
+                  className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
+                >
+                  Switch to Bistoland Admin Portal
+                </Button>
+              </div>
             </div>
           )}
         </>
@@ -266,6 +296,16 @@ export default function App() {
           <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
             <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
             <p className="text-xs text-slate-500 mt-1">Staff employment directories are restricted to school administrators.</p>
+            <div className="mt-4">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => switchToRole('ADMIN', 'bistoland')}
+                className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
+              >
+                Switch to Bistoland Admin Portal
+              </Button>
+            </div>
           </div>
         )
       )}
@@ -278,6 +318,16 @@ export default function App() {
           <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
             <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
             <p className="text-xs text-slate-500 mt-1">Guardian directories are restricted to school administrators.</p>
+            <div className="mt-4">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => switchToRole('ADMIN', 'bistoland')}
+                className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
+              >
+                Switch to Bistoland Admin Portal
+              </Button>
+            </div>
           </div>
         )
       )}

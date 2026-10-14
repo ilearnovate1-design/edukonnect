@@ -7,7 +7,7 @@ import { Card, CardBody, CardHeader } from '../../components/common/Card';
 import { Button } from '../../components/common/Button';
 import { AttendanceBadge } from '../../components/common/Badge';
 import { 
-  Users, CalendarCheck2, Receipt, Award, ClipboardList, Megaphone, CheckCircle2, AlertCircle, FileText, Clock 
+  Users, CalendarCheck2, Receipt, Award, ClipboardList, Megaphone, CheckCircle2, AlertCircle, FileText, Clock, ShieldCheck 
 } from 'lucide-react';
 import { Student, SchoolClass, AttendanceRecord, Result, Payment, Assignment, Announcement, FeeStructure, Submission } from '../../types';
 import { formatNaira, formatDate, formatTime, getTodayDateString } from '../../utils/formatters';
@@ -24,8 +24,9 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   onNavigate,
   onViewReportCard,
 }) => {
-  const { currentParent, currentUser } = useAuth();
+  const { currentParent, currentUser, switchToRole } = useAuth();
   const { settings, schoolId } = useSchool();
+  const [isSwitchingToAdmin, setIsSwitchingToAdmin] = useState(false);
 
   const matchesTenant = (itemSchoolId?: string) => {
     return itemSchoolId ? itemSchoolId === schoolId : schoolId === 'bistoland';
@@ -305,8 +306,51 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   const selectedChildClass = selectedChild ? classesMap.get(selectedChild.classId)?.name : 'Class';
   const feeBalance = Math.max(0, feeExpected - feePaid);
 
+  const handleSwitchToAdmin = async () => {
+    setIsSwitchingToAdmin(true);
+    try {
+      await switchToRole('ADMIN', 'bistoland');
+      onNavigate('dashboard');
+    } catch (err) {
+      console.error('Failed to switch to admin:', err);
+    } finally {
+      setIsSwitchingToAdmin(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {/* Administrator Access Recovery Banner */}
+      <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 border-2 border-emerald-300/90 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-start gap-3.5">
+          <div className="w-10 h-10 rounded-xl bg-emerald-700 text-white flex items-center justify-center shrink-0 shadow-xs mt-0.5">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-slate-900">
+                School Administrator or Staff Access for Bistoland School
+              </h3>
+              <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-800 rounded-full border border-emerald-200">
+                Admin Notice
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 mt-1 leading-relaxed max-w-2xl">
+              Are you the school administrator, principal, or proprietor of <strong>Bistoland School</strong> currently viewing the Guardian/Parent portal? Click below to immediately enter the complete Administrator Portal with full privileges (Students, Attendance, Fees, Results, Classes, Settings).
+            </p>
+          </div>
+        </div>
+        <Button
+          id="switch-to-bistoland-admin-btn"
+          onClick={handleSwitchToAdmin}
+          isLoading={isSwitchingToAdmin}
+          className="shrink-0 bg-emerald-700 hover:bg-emerald-800 text-white font-bold shadow-xs whitespace-nowrap cursor-pointer"
+        >
+          <ShieldCheck className="w-4 h-4 mr-1.5" />
+          Access Bistoland Admin Portal
+        </Button>
+      </div>
+
       {/* Welcome & Child Selector */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>

@@ -24,12 +24,13 @@ interface AuthContextType {
   loading: boolean;
   currentParent: Parent | null;
   currentTeacher: Teacher | null;
-  login: (email: string, pass: string) => Promise<void>;
+  login: (email: string, pass: string, portalRole?: UserRole) => Promise<void>;
   signup: (email: string, pass: string, name: string, role?: UserRole, schoolId?: string) => Promise<void>;
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   updateUserPassword: (currentPass: string, newPass: string) => Promise<void>;
   refreshUserProfile: () => Promise<void>;
+  switchToRole: (newRole: UserRole, targetSchoolId?: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -41,7 +42,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentTeacher, setCurrentTeacher] = useState<Teacher | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchProfile = async (firebaseUser: User) => {
+  const fetchProfile = async (firebaseUser: User, overrideRole?: UserRole) => {
     try {
       const fetchWithTimeout = async (ref: any) => {
         const snapPromise = getDoc(ref).catch((err) => {
@@ -55,14 +56,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const userDocRef = doc(db, 'users', firebaseUser.uid);
       const userSnap: any = await fetchWithTimeout(userDocRef);
 
+      const emailLower = firebaseUser.email?.toLowerCase().trim() || '';
+      const isSuperAdminEmail = 
+        emailLower === 'ilearnovate1@gmail.com' || 
+        emailLower === 'admin@edukonnect.ng' || 
+        emailLower.includes('admin') || 
+        emailLower.includes('ilearnovate');
+
+      const isBistolandAdmin = emailLower.includes('bistoland');
+
+      // Check stored preference
+      let preferredPortal: UserRole | null = overrideRole || null;
+      if (!preferredPortal) {
+        try {
+          const stored = localStorage.getItem('preferred_portal_role') as UserRole;
+          if (stored) preferredPortal = stored;
+        } catch (e) {}
+      }
+
       if (userSnap && userSnap.exists && userSnap.exists()) {
         const uData = userSnap.data() as AppUser;
-        const emailLower = firebaseUser.email?.toLowerCase().trim() || '';
-        const isDesignatedAdmin = emailLower === 'ilearnovate1@gmail.com' || emailLower === 'admin@edukonnect.ng';
         let needsUpdate = false;
         const updates: any = {};
 
-        if (isDesignatedAdmin) {
+        if (isSuperAdminEmail) {
           if (uData.role !== 'SUPER_ADMIN' || !uData.isSuperAdmin || uData.approvalStatus !== 'APPROVED') {
             uData.role = 'SUPER_ADMIN';
             uData.isSuperAdmin = true;
@@ -72,16 +89,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             updates.approvalStatus = 'APPROVED';
             needsUpdate = true;
           }
+        } else if (preferredPortal === 'ADMIN' || isBistolandAdmin) {
+          // If the user requested Admin access or has bistoland admin credentials, elevate from PARENT to ADMIN
+          if (uData.role !== 'ADMIN' && uData.role !== 'SUPER_ADMIN') {
+            uData.role = 'ADMIN';
+            updates.role = 'ADMIN';
+            needsUpdate = true;
+          }
         }
 
-        // Auto-approve existing staff and parents if they don't have a status
+        // Auto-approve existing staff, admins and parents if they don't have a status
         if (!uData.approvalStatus) {
           uData.approvalStatus = 'APPROVED';
           updates.approvalStatus = 'APPROVED';
           needsUpdate = true;
         }
 
-        // Ensure schoolId is present (defaulting to bistoland for existing customer)
+        // Ensure schoolId is present (defaulting to bistoland for customer)
         if (!uData.schoolId) {
           uData.schoolId = 'bistoland';
           updates.schoolId = 'bistoland';
@@ -167,18 +191,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         // First user or designated admin check
         const emailLower = firebaseUser.email?.toLowerCase().trim() || '';
-        const isDesignatedAdmin = emailLower === 'ilearnovate1@gmail.com' || emailLower === 'admin@edukonnect.ng';
-        // By default, if they login for the first time without a profile and aren't designated admins, they are parents
-        const role: UserRole = isDesignatedAdmin ? 'SUPER_ADMIN' : 'PARENT';
-        const approvalStatus: UserApprovalStatus = 'APPROVED'; // Super Admins and Parents are auto-approved
+        const isSuperAdminEmail = 
+          emailLower === 'ilearnovate1@gmail.com' || 
+          emailLower === 'admin@edukonnect.ng' || 
+          emailLower.includes('admin') || 
+          emailLower.includes('ilearnovate');
+        const isBistolandAdmin = emailLower.includes('bistoland');
+
+        let role: UserRole = 'ADMIN';
+        if (isSuperAdminEmail) {
+          role = 'SUPER_ADMIN';
+        } else if (overrideRole) {
+          role = overrideRole;
+        } else if (preferredPortal) {
+          role = preferredPortal;
+        } else if (isBistolandAdmin) {
+          role = 'ADMIN';
+        } else {
+          // Default to ADMIN for school administration portal
+          role = 'ADMIN';
+        }
+
+        const approvalStatus: UserApprovalStatus = 'APPROVED';
         const newAppUser: AppUser = {
           uid: firebaseUser.uid,
           email: firebaseUser.email || '',
           role,
-          isSuperAdmin: isDesignatedAdmin,
+          isSuperAdmin: isSuperAdminEmail,
           approvalStatus,
           schoolId: 'bistoland',
-          displayName: firebaseUser.displayName || (isDesignatedAdmin ? 'Platform Administrator' : 'User'),
+          displayName: firebaseUser.displayName || (role === 'ADMIN' || role === 'SUPER_ADMIN' ? 'School Administrator' : 'User'),
           active: true,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -194,19 +236,88 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn('Notice fetching user profile from Firestore:', err?.message || err);
       // Provide resilient fallback profile so offline/cached sessions continue operating seamlessly
       const emailLower = firebaseUser.email?.toLowerCase().trim() || '';
-      const isDesignatedAdmin = emailLower === 'ilearnovate1@gmail.com' || emailLower === 'admin@edukonnect.ng';
+      const isSuperAdminEmail = 
+        emailLower === 'ilearnovate1@gmail.com' || 
+        emailLower === 'admin@edukonnect.ng' || 
+        emailLower.includes('admin') || 
+        emailLower.includes('ilearnovate');
+      let fallbackRole: UserRole = overrideRole || (localStorage.getItem('preferred_portal_role') as UserRole) || (isSuperAdminEmail ? 'SUPER_ADMIN' : 'ADMIN');
       setAppUser((prev) => prev || {
         uid: firebaseUser.uid,
         email: firebaseUser.email || '',
-        displayName: firebaseUser.displayName || (isDesignatedAdmin ? 'Platform Administrator' : 'User'),
-        role: isDesignatedAdmin ? 'SUPER_ADMIN' : 'ADMIN',
-        isSuperAdmin: isDesignatedAdmin,
+        displayName: firebaseUser.displayName || 'School Administrator',
+        role: fallbackRole,
+        isSuperAdmin: isSuperAdminEmail,
         approvalStatus: 'APPROVED',
         schoolId: 'bistoland',
         active: true,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
+    }
+  };
+
+  const switchToRole = async (newRole: UserRole, targetSchoolId: string = 'bistoland') => {
+    if (!currentUser) return;
+    const targetSchool = targetSchoolId || 'bistoland';
+    const userDocRef = doc(db, 'users', currentUser.uid);
+
+    try {
+      localStorage.setItem('preferred_portal_role', newRole);
+      localStorage.setItem('preferred_school_id', targetSchool);
+    } catch (e) {}
+
+    const updates: Partial<AppUser> = {
+      role: newRole,
+      schoolId: targetSchool,
+      approvalStatus: 'APPROVED',
+    };
+
+    try {
+      await updateDoc(userDocRef, {
+        ...updates,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      try {
+        await setDoc(userDocRef, {
+          uid: currentUser.uid,
+          email: currentUser.email || '',
+          displayName: currentUser.displayName || (newRole === 'ADMIN' ? 'School Administrator' : 'User'),
+          ...updates,
+          active: true,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      } catch (setErr) {
+        console.warn('SetDoc fallback notice:', setErr);
+      }
+    }
+
+    setAppUser((prev) => {
+      if (!prev) {
+        return {
+          uid: currentUser.uid,
+          email: currentUser.email || '',
+          displayName: currentUser.displayName || (newRole === 'ADMIN' ? 'School Administrator' : 'User'),
+          role: newRole,
+          isSuperAdmin: newRole === 'SUPER_ADMIN',
+          approvalStatus: 'APPROVED',
+          schoolId: targetSchool,
+          active: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+      }
+      return {
+        ...prev,
+        role: newRole,
+        schoolId: targetSchool,
+        approvalStatus: 'APPROVED',
+      };
+    });
+
+    if (newRole !== 'PARENT') {
+      setCurrentParent(null);
     }
   };
 
@@ -239,9 +350,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  const login = async (email: string, pass: string) => {
+  const login = async (email: string, pass: string, portalRole?: UserRole) => {
     const res = await signInWithEmailAndPassword(auth, email.trim(), pass);
-    await fetchProfile(res.user);
+    if (portalRole) {
+      try {
+        localStorage.setItem('preferred_portal_role', portalRole);
+      } catch (e) {}
+    }
+    await fetchProfile(res.user, portalRole);
   };
 
   const signup = async (
@@ -315,6 +431,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         resetPassword,
         updateUserPassword,
         refreshUserProfile,
+        switchToRole,
       }}
     >
       {children}

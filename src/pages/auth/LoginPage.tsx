@@ -16,6 +16,7 @@ export const LoginPage: React.FC<{ onSetupRequested?: () => void }> = ({ onSetup
   // Login form state
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loginPortal, setLoginPortal] = useState<'ADMIN' | 'PARENT'>('ADMIN');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -48,7 +49,7 @@ export const LoginPage: React.FC<{ onSetupRequested?: () => void }> = ({ onSetup
     setErrorMessage('');
     setIsLoading(true);
     try {
-      await login(email, password);
+      await login(email, password, loginPortal);
     } catch (err: any) {
       setErrorMessage(parseFirebaseError(err));
     } finally {
@@ -172,6 +173,41 @@ export const LoginPage: React.FC<{ onSetupRequested?: () => void }> = ({ onSetup
 
           {activeTab === 'LOGIN' ? (
             <form onSubmit={handleLoginSubmit} className="space-y-4">
+              {/* Portal Selector */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Access Portal
+                </label>
+                <div className="p-1 bg-slate-100 rounded-xl flex gap-1 border border-slate-200">
+                  <button
+                    type="button"
+                    id="portal-select-admin-btn"
+                    onClick={() => setLoginPortal('ADMIN')}
+                    className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      loginPortal === 'ADMIN'
+                        ? 'bg-emerald-700 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    Admin Access
+                  </button>
+                  <button
+                    type="button"
+                    id="portal-select-parent-btn"
+                    onClick={() => setLoginPortal('PARENT')}
+                    className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      loginPortal === 'PARENT'
+                        ? 'bg-white text-emerald-800 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <GraduationCap className="w-3.5 h-3.5" />
+                    Parents Access
+                  </button>
+                </div>
+              </div>
+
               <Input
                 id="login-email"
                 type="email"
@@ -214,7 +250,7 @@ export const LoginPage: React.FC<{ onSetupRequested?: () => void }> = ({ onSetup
                 isLoading={isLoading}
                 size="lg"
               >
-                Sign In to Portal
+                {loginPortal === 'ADMIN' ? 'Sign In as Administrator' : 'Sign In as Parent / Guardian'}
               </Button>
 
               <div className="mt-5 p-3.5 bg-slate-50 border border-slate-200/80 rounded-xl flex items-start gap-2.5 text-xs text-slate-600">
