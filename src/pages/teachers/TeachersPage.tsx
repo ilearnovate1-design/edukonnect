@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  collection, getDocs, doc, setDoc, updateDoc, serverTimestamp 
+  collection, getDocs, doc, setDoc, updateDoc, deleteDoc, serverTimestamp 
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { Teacher, SchoolClass, Subject } from '../../types';
@@ -8,7 +8,7 @@ import { Button } from '../../components/common/Button';
 import { Input, Select } from '../../components/common/Input';
 import { Card } from '../../components/common/Card';
 import { Modal } from '../../components/common/Modal';
-import { Plus, Search, Edit2, Phone, Mail, BookOpen, Layers, Briefcase } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, Phone, Mail, BookOpen, Layers, Briefcase } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
@@ -202,6 +202,34 @@ export const TeachersPage: React.FC = () => {
     }
   };
 
+  const handleDeleteTeacher = async (teacher: Teacher) => {
+    if (!window.confirm(`Are you sure you want to permanently delete teacher "${teacher.firstName} ${teacher.lastName}"? This cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'teachers', teacher.teacherId));
+      if (teacher.userId) {
+        try {
+          await deleteDoc(doc(db, 'users', teacher.userId));
+        } catch (uErr) {
+          console.warn('Teacher user record delete notice:', uErr);
+        }
+      }
+      await logAudit(
+        currentUser?.uid || 'admin',
+        'TEACHER_DELETED',
+        'teachers',
+        teacher.teacherId,
+        `Deleted teacher ${teacher.firstName} ${teacher.lastName}`,
+        teacher.schoolId || schoolId || 'default'
+      );
+      await fetchData();
+    } catch (err) {
+      console.error('Failed to delete teacher:', err);
+      alert('Failed to delete teacher');
+    }
+  };
+
   const classesMap = new Map<string, SchoolClass>(classes.map((c) => [c.classId, c]));
 
   const filteredTeachers = teachers.filter((t) => {
@@ -321,7 +349,7 @@ export const TeachersPage: React.FC = () => {
                 </div>
 
                 {role === 'ADMIN' && (
-                  <div className="shrink-0">
+                  <div className="shrink-0 flex items-center gap-2">
                     <Button
                       size="sm"
                       variant="outline"
@@ -330,6 +358,14 @@ export const TeachersPage: React.FC = () => {
                     >
                       Edit & Assign
                     </Button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteTeacher(teacher)}
+                      title="Delete Teacher"
+                      className="p-2 border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 )}
               </div>

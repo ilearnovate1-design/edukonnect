@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  collection, getDocs, doc, updateDoc, query, where, orderBy, serverTimestamp 
+  collection, getDocs, doc, updateDoc, deleteDoc, query, where, orderBy, serverTimestamp 
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { Student, SchoolClass, Parent, StudentStatus } from '../../types';
@@ -13,7 +13,7 @@ import { BulkUploadStudentsModal } from './BulkUploadStudentsModal';
 import { StudentProfileModal } from './StudentProfileModal';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { 
-  Plus, Upload, Search, Filter, Eye, Edit2, Archive, UserX, Phone, GraduationCap, FileText 
+  Plus, Upload, Search, Filter, Eye, Edit2, Archive, Trash2, UserX, Phone, GraduationCap, FileText 
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
@@ -120,6 +120,27 @@ export const StudentsPage: React.FC = () => {
       console.error('Error archiving student:', err);
     } finally {
       setArchiveLoading(false);
+    }
+  };
+
+  const handleDeleteStudent = async (student: Student) => {
+    if (!window.confirm(`Are you sure you want to permanently delete student "${student.firstName} ${student.lastName}" (Admission: ${student.admissionNumber})? This will permanently delete this student record.`)) {
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'students', student.studentId));
+      await logAudit(
+        currentUser?.uid || 'admin',
+        'STUDENT_DELETED',
+        'students',
+        student.studentId,
+        `Permanently deleted student ${student.firstName} ${student.lastName}`,
+        student.schoolId || schoolId || 'default'
+      );
+      await fetchAllData();
+    } catch (err) {
+      console.error('Error deleting student:', err);
+      alert('Failed to delete student');
     }
   };
 
@@ -332,11 +353,19 @@ export const StudentsPage: React.FC = () => {
                                   type="button"
                                   onClick={() => setStudentToArchive(student)}
                                   title="Archive Student (Soft Delete)"
-                                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer"
                                 >
                                   <Archive className="w-4 h-4" />
                                 </button>
                               )}
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteStudent(student)}
+                                title="Permanently Delete Student"
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </>
                           )}
                         </div>

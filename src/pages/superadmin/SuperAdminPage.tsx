@@ -14,7 +14,7 @@ import {
   Wrench,
   AlertCircle
 } from 'lucide-react';
-import { collection, getDocs, query, orderBy, limit, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, limit, doc, updateDoc, deleteDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
@@ -30,7 +30,7 @@ import {
 import { purgeAllPlatformData } from '../../services/maintenanceService';
 import { Card, CardBody, CardHeader } from '../../components/common/Card';
 import { Modal } from '../../components/common/Modal';
-import { formatDate } from '../../utils/formatters';
+import { formatDate, logAudit } from '../../utils/formatters';
 
 export const SuperAdminPage: React.FC = () => {
   const { isSuperAdmin, logout, currentUser } = useAuth();
@@ -62,6 +62,17 @@ export const SuperAdminPage: React.FC = () => {
   const [purgeSchoolDataOnDelete, setPurgeSchoolDataOnDelete] = useState(true);
   const [isDeletingSchool, setIsDeletingSchool] = useState(false);
   const [deleteSchoolError, setDeleteSchoolError] = useState('');
+
+  // User Deletion & Clear All Admins
+  const [showDeleteUserModal, setShowDeleteUserModal] = useState(false);
+  const [userToDelete, setUserToDelete] = useState<AppUser | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
+  const [deleteUserError, setDeleteUserError] = useState('');
+
+  const [showClearAdminsModal, setShowClearAdminsModal] = useState(false);
+  const [isClearingAdmins, setIsClearingAdmins] = useState(false);
+  const [clearAdminsConfirmText, setClearAdminsConfirmText] = useState('');
+  const [clearAdminsError, setClearAdminsError] = useState('');
 
   // Maintenance
   const [isPurging, setIsPurging] = useState(false);
@@ -238,6 +249,78 @@ export const SuperAdminPage: React.FC = () => {
       fetchSchools();
     } catch (err) {
       console.error('Failed to update user status:', err);
+    }
+  };
+
+  const openDeleteUserModal = (user: AppUser) => {
+    if (user.role === 'SUPER_ADMIN' || user.isSuperAdmin || user.email?.toLowerCase() === 'ilearnovate1@gmail.com') {
+      alert('Cannot delete the root System Super Administrator account.');
+      return;
+    }
+    setUserToDelete(user);
+    setDeleteUserError('');
+    setShowDeleteUserModal(true);
+  };
+
+  const handleExecuteDeleteUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userToDelete) return;
+    setIsDeletingUser(true);
+    setDeleteUserError('');
+    try {
+      await deleteDoc(doc(db, 'users', userToDelete.uid));
+      await logAudit(
+        currentUser?.uid || 'superadmin',
+        'ADMIN_USER_DELETED',
+        'users',
+        userToDelete.uid,
+        `Permanently deleted administrator account ${userToDelete.email} (${userToDelete.displayName || 'Admin'})`
+      );
+      setShowDeleteUserModal(false);
+      setUserToDelete(null);
+      await fetchSchools();
+    } catch (err: any) {
+      console.error('Failed to delete user:', err);
+      setDeleteUserError(err.message || 'Failed to delete administrator account');
+    } finally {
+      setIsDeletingUser(false);
+    }
+  };
+
+  const handleExecuteClearAllAdmins = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const adminUsers = users.filter(u => u.role === 'ADMIN' && !u.isSuperAdmin && u.email?.toLowerCase() !== 'ilearnovate1@gmail.com');
+    if (adminUsers.length === 0) {
+      setShowClearAdminsModal(false);
+      return;
+    }
+    if (clearAdminsConfirmText.trim().toUpperCase() !== 'CLEAR') {
+      setClearAdminsError('Please type "CLEAR" in the confirmation box to proceed.');
+      return;
+    }
+    setIsClearingAdmins(true);
+    setClearAdminsError('');
+    try {
+      const batch = writeBatch(db);
+      for (const u of adminUsers) {
+        batch.delete(doc(db, 'users', u.uid));
+      }
+      await batch.commit();
+      await logAudit(
+        currentUser?.uid || 'superadmin',
+        'CLEAR_ALL_ADMIN_USERS',
+        'users',
+        'all',
+        `Cleared all ${adminUsers.length} administrator accounts`
+      );
+      setShowClearAdminsModal(false);
+      setClearAdminsConfirmText('');
+      await fetchSchools();
+    } catch (err: any) {
+      console.error('Failed to clear admin accounts:', err);
+      setClearAdminsError(err.message || 'Failed to clear administrator accounts');
+    } finally {
+      setIsClearingAdmins(false);
     }
   };
 
@@ -489,10 +572,26 @@ export const SuperAdminPage: React.FC = () => {
         </>
       ) : activeTab === 'users' ? (
         <Card>
-          <CardHeader 
-            title="Administrator Accounts" 
-            subtitle="Manage portal access and institutional verification requests" 
-          />
+          <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h3 className="font-bold text-slate-900 text-lg">Administrator Accounts</h3>
+              <p className="text-sm text-slate-500">Manage portal access, verification requests, and account privileges</p>
+            </div>
+            {users.filter(u => u.role === 'ADMIN').length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setClearAdminsConfirmText('');
+                  setClearAdminsError('');
+                  setShowClearAdminsModal(true);
+                }}
+                className="px-3.5 py-2 bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Clear All Admin Accounts ({users.filter(u => u.role === 'ADMIN').length})
+              </button>
+            )}
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -504,47 +603,74 @@ export const SuperAdminPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {users.filter(u => u.role === 'ADMIN').map((user) => (
-                  <tr key={user.uid}>
-                    <td className="px-6 py-4">
-                      <p className="font-bold text-slate-900 leading-none mb-1">{user.displayName}</p>
-                      <p className="text-xs text-slate-400">{user.email}</p>
-                    </td>
-                    <td className="px-6 py-4 text-sm font-mono text-slate-600">
-                      {user.schoolId || 'PENDING'}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                        user.approvalStatus === 'APPROVED' ? 'bg-emerald-100 text-emerald-700' :
-                        user.approvalStatus === 'REJECTED' ? 'bg-rose-100 text-rose-700' :
-                        user.approvalStatus === 'PENDING_APPROVAL' ? 'bg-amber-100 text-amber-700 animate-pulse' :
-                        'bg-slate-100 text-slate-500'
-                      }`}>
-                        {user.approvalStatus?.replace('_', ' ') || 'PENDING SETUP'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex justify-end gap-2">
-                        {user.approvalStatus !== 'APPROVED' && (
-                          <button 
-                            onClick={() => handleUpdateUserStatus(user.uid, 'APPROVED')}
-                            className="px-3 py-1.5 bg-emerald-600 text-white text-[10px] font-bold rounded-lg hover:bg-emerald-700 transition-colors uppercase"
-                          >
-                            Approve
-                          </button>
-                        )}
-                        {user.approvalStatus !== 'REJECTED' && (
-                          <button 
-                            onClick={() => handleUpdateUserStatus(user.uid, 'REJECTED')}
-                            className="px-3 py-1.5 border border-rose-200 text-rose-600 text-[10px] font-bold rounded-lg hover:bg-rose-50 transition-colors uppercase"
-                          >
-                            Reject
-                          </button>
-                        )}
+                {users.filter(u => u.role === 'ADMIN').length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-12 text-center text-slate-500">
+                      <div className="flex flex-col items-center justify-center max-w-sm mx-auto">
+                        <ShieldCheck className="w-10 h-10 text-emerald-500/30 mb-3" />
+                        <p className="font-bold text-slate-800 text-sm">No Administrator Accounts</p>
+                        <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                          All institutional administrator accounts are cleared. When school administrators register, their profiles will appear here for verification and role management.
+                        </p>
                       </div>
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  users.filter(u => u.role === 'ADMIN').map((user) => (
+                    <tr key={user.uid} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-6 py-4">
+                        <p className="font-bold text-slate-900 leading-none mb-1">{user.displayName || 'School Administrator'}</p>
+                        <p className="text-xs text-slate-400">{user.email}</p>
+                      </td>
+                      <td className="px-6 py-4 text-sm font-mono text-slate-600">
+                        {user.schoolId || 'PENDING'}
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                          user.approvalStatus === 'APPROVED' ? 'bg-emerald-100 text-emerald-700' :
+                          user.approvalStatus === 'REJECTED' ? 'bg-rose-100 text-rose-700' :
+                          user.approvalStatus === 'PENDING_APPROVAL' ? 'bg-amber-100 text-amber-700 animate-pulse' :
+                          'bg-slate-100 text-slate-500'
+                        }`}>
+                          {user.approvalStatus?.replace('_', ' ') || 'PENDING SETUP'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex justify-end items-center gap-2">
+                          {user.approvalStatus !== 'APPROVED' && (
+                            <button 
+                              type="button"
+                              onClick={() => handleUpdateUserStatus(user.uid, 'APPROVED')}
+                              className="px-2.5 py-1.5 bg-emerald-600 text-white text-[10px] font-bold rounded-lg hover:bg-emerald-700 transition-colors uppercase cursor-pointer"
+                              title="Approve administrator"
+                            >
+                              Approve
+                            </button>
+                          )}
+                          {user.approvalStatus !== 'REJECTED' && (
+                            <button 
+                              type="button"
+                              onClick={() => handleUpdateUserStatus(user.uid, 'REJECTED')}
+                              className="px-2.5 py-1.5 border border-slate-200 text-slate-600 text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-colors uppercase cursor-pointer"
+                              title="Reject administrator"
+                            >
+                              Reject
+                            </button>
+                          )}
+                          <button 
+                            type="button"
+                            onClick={() => openDeleteUserModal(user)}
+                            className="px-2.5 py-1.5 border border-rose-200 text-rose-600 hover:bg-rose-50 text-[10px] font-bold rounded-lg transition-colors uppercase flex items-center gap-1 cursor-pointer"
+                            title="Delete this administrator account"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -806,6 +932,138 @@ export const SuperAdminPage: React.FC = () => {
                 <>
                   <Trash2 className="w-4 h-4" />
                   <span>Delete School</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Delete User Account Modal */}
+      <Modal
+        isOpen={showDeleteUserModal}
+        onClose={() => !isDeletingUser && setShowDeleteUserModal(false)}
+        title="Delete Administrator Account"
+      >
+        <form onSubmit={handleExecuteDeleteUser} className="space-y-4">
+          <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl flex gap-3">
+            <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-bold text-rose-900">
+                Permanently Delete Administrator
+              </p>
+              <p className="text-xs text-rose-700 mt-1">
+                This will revoke all administrative privileges and access to the portal.
+              </p>
+            </div>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5 text-xs">
+            <p className="text-slate-600"><strong className="text-slate-800">Name:</strong> {userToDelete?.displayName || 'School Administrator'}</p>
+            <p className="text-slate-600"><strong className="text-slate-800">Email:</strong> <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-slate-900">{userToDelete?.email}</code></p>
+            <p className="text-slate-600"><strong className="text-slate-800">School ID:</strong> <span className="font-mono">{userToDelete?.schoolId || 'default'}</span></p>
+          </div>
+
+          {deleteUserError && (
+            <div className="p-3 bg-rose-50 text-rose-700 text-xs rounded-lg flex items-center gap-2 font-medium">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{deleteUserError}</span>
+            </div>
+          )}
+
+          <div className="flex gap-3 mt-6">
+            <button
+              type="button"
+              disabled={isDeletingUser}
+              onClick={() => setShowDeleteUserModal(false)}
+              className="flex-1 px-4 py-2 border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50 text-sm font-medium cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isDeletingUser}
+              className="flex-1 px-4 py-2 bg-rose-600 text-white rounded-lg hover:bg-rose-700 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              {isDeletingUser ? (
+                <>
+                  <RefreshCcw className="w-4 h-4 animate-spin" />
+                  <span>Deleting...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-4 h-4" />
+                  <span>Confirm Delete</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Clear All Administrator Accounts Modal */}
+      <Modal
+        isOpen={showClearAdminsModal}
+        onClose={() => !isClearingAdmins && setShowClearAdminsModal(false)}
+        title="Clear All Administrator Accounts"
+      >
+        <form onSubmit={handleExecuteClearAllAdmins} className="space-y-4">
+          <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl flex gap-3">
+            <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-bold text-rose-900">
+                Purge All Administrator Accounts
+              </p>
+              <p className="text-xs text-rose-700 mt-1">
+                This will permanently delete all {users.filter(u => u.role === 'ADMIN').length} administrator account(s). The root Super Administrator account ({currentUser?.email || 'ilearnovate1@gmail.com'}) will NOT be deleted.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">
+              Type <strong className="text-rose-600 font-mono">CLEAR</strong> to confirm:
+            </label>
+            <input
+              type="text"
+              required
+              value={clearAdminsConfirmText}
+              onChange={(e) => setClearAdminsConfirmText(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 font-mono"
+              placeholder="CLEAR"
+            />
+          </div>
+
+          {clearAdminsError && (
+            <div className="p-3 bg-rose-50 text-rose-700 text-xs rounded-lg flex items-center gap-2 font-medium">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{clearAdminsError}</span>
+            </div>
+          )}
+
+          <div className="flex gap-3 mt-6">
+            <button
+              type="button"
+              disabled={isClearingAdmins}
+              onClick={() => setShowClearAdminsModal(false)}
+              className="flex-1 px-4 py-2 border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50 text-sm font-medium cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isClearingAdmins || clearAdminsConfirmText.trim().toUpperCase() !== 'CLEAR'}
+              className="flex-1 px-4 py-2 bg-rose-600 text-white rounded-lg hover:bg-rose-700 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              {isClearingAdmins ? (
+                <>
+                  <RefreshCcw className="w-4 h-4 animate-spin" />
+                  <span>Clearing Accounts...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-4 h-4" />
+                  <span>Clear All Admins</span>
                 </>
               )}
             </button>
