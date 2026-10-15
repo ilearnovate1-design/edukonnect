@@ -81,9 +81,10 @@ export interface SchoolClass {
   classId: string;
   schoolId?: string;
   name: string; // e.g. "Primary 5"
-  level?: string; // e.g. "Primary"
+  level?: string; // e.g. "Primary", "JSS", "SSS", "Nursery"
   section?: string; // e.g. "A" or "Gold"
   classTeacherId?: string;
+  gradingProfileId?: string;
   academicSession: string;
   createdAt: any;
   updatedAt: any;
@@ -159,6 +160,22 @@ export interface Payment {
   createdAt: any;
 }
 
+export type ResultStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'PUBLISHED';
+
+export interface ResultAuditEntry {
+  timestamp: string;
+  userId: string;
+  userName: string;
+  action: 'CREATED' | 'UPDATED' | 'SUBMITTED' | 'APPROVED' | 'PUBLISHED' | 'REVERTED_TO_DRAFT';
+  previousScores?: Record<string, number | null>;
+  newScores?: Record<string, number | null>;
+  previousTotal?: number;
+  newTotal?: number;
+  previousGrade?: string;
+  newGrade?: string;
+  reason?: string;
+}
+
 export interface Result {
   resultId: string;
   schoolId?: string;
@@ -168,13 +185,49 @@ export interface Result {
   teacherId?: string;
   academicSession: string;
   term: string;
+  
+  // Dynamic component scores: componentId -> score (or null if missing)
+  componentScores?: Record<string, number | null>;
+  
+  // Legacy / fallback scores for backward compatibility
   caScore: number;
   examScore: number;
+  
   totalScore: number;
   grade: string;
   remark?: string;
+  gradePoint?: number;
   teacherComment?: string;
-  status: 'DRAFT' | 'PUBLISHED';
+  
+  // Configuration snapshots for historical immutability
+  gradingProfileId?: string;
+  gradingProfileSnapshot?: {
+    profileId: string;
+    name: string;
+    calculationMethod: 'SUM' | 'WEIGHTED_PERCENTAGE';
+    treatMissingAsZero: boolean;
+    roundingPolicy: 'ROUND_HALF_UP_INTEGER' | 'ROUND_HALF_UP_1DECIMAL' | 'ROUND_HALF_UP_2DECIMAL';
+    components: AssessmentComponentConfig[];
+    gradeBands: GradeBand[];
+    version: number;
+  };
+  
+  // Quality & validation flags
+  isMissingAny?: boolean;
+  isIncomplete?: boolean;
+  
+  // Workflow status
+  status: ResultStatus;
+  
+  // Approvals & audit trail
+  submittedBy?: string;
+  submittedAt?: any;
+  approvedBy?: string;
+  approvedAt?: any;
+  publishedBy?: string;
+  publishedAt?: any;
+  auditHistory?: ResultAuditEntry[];
+  
   createdAt: any;
   updatedAt: any;
 }
@@ -239,11 +292,76 @@ export interface AppNotification {
   createdAt: any;
 }
 
-export interface GradingScaleItem {
-  min: number;
-  max: number;
-  grade: string;
-  remark: string;
+export interface AssessmentComponentConfig {
+  id: string; // e.g. 'ca1', 'ca2', 'midterm', 'exam'
+  name: string; // e.g. '1st Continuous Assessment', 'Terminal Exam'
+  maxScore: number; // e.g. 10, 20, 60
+  weight: number; // e.g. 10, 20, 60 (for percentage calculations)
+  optional?: boolean;
+}
+
+export interface GradeBand {
+  min: number; // inclusive lower bound e.g. 70
+  max: number; // inclusive upper bound e.g. 100
+  grade: string; // e.g. 'A', 'A+', 'B'
+  remark: string; // e.g. 'Distinction', 'Excellent'
+  gradePoint?: number; // e.g. 5.0, 4.0
+}
+
+export interface GradingScaleItem extends GradeBand {}
+
+export type GradingLevelCategory = 'NURSERY' | 'PRIMARY' | 'JSS' | 'SSS' | 'CUSTOM';
+export type GradingCalculationMethod = 'SUM' | 'WEIGHTED_PERCENTAGE';
+export type RoundingPolicy = 'ROUND_HALF_UP_INTEGER' | 'ROUND_HALF_UP_1DECIMAL' | 'ROUND_HALF_UP_2DECIMAL';
+
+export interface PromotionRuleConfig {
+  enabled: boolean;
+  minAverageScore: number;
+  requiredPassSubjectIds?: string[];
+  automaticVerdict: boolean;
+  verdictPromotedLabel: string;
+  verdictTrialLabel: string;
+  verdictRepeatLabel: string;
+}
+
+export interface ReportCardDisplayConfig {
+  showAttendance: boolean;
+  showPosition: boolean;
+  showClassAverage: boolean;
+  showStudentAverage: boolean;
+  showGradePoints: boolean;
+  showComponentBreakdown: boolean;
+  showPromotionStatus: boolean;
+  showAffectiveTraits: boolean;
+  showTeacherRemarks: boolean;
+  showPrincipalRemarks: boolean;
+  showNextTermDate: boolean;
+  showOfficialSeal: boolean;
+}
+
+export interface GradingProfile {
+  profileId: string;
+  schoolId: string;
+  name: string;
+  levelCategory: GradingLevelCategory;
+  description?: string;
+  isDefault?: boolean;
+  calculationMethod: GradingCalculationMethod;
+  treatMissingAsZero: boolean;
+  roundingPolicy: RoundingPolicy;
+  components: AssessmentComponentConfig[];
+  gradeBands: GradeBand[];
+  subjectOverrides?: Record<string, string>; // subjectId -> profileId
+  affectiveScale?: {
+    min: number;
+    max: number;
+    labels?: Record<number, string>;
+  };
+  promotionRule?: PromotionRuleConfig;
+  displaySettings?: ReportCardDisplayConfig;
+  version: number;
+  createdAt?: any;
+  updatedAt?: any;
 }
 
 export interface AffectiveTraitConfig {
@@ -318,6 +436,7 @@ export interface SchoolSettings {
   timeZone?: string;
   currency?: string;
   gradingScale: GradingScaleItem[];
+  defaultGradingProfileId?: string;
   reportTemplate?: ReportTemplateSettings;
   createdAt?: any;
   updatedAt?: any;

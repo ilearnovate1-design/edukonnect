@@ -40,13 +40,14 @@ import {
 } from '../../services/dataManagement';
 import { DEFAULT_REPORT_TEMPLATE, DEFAULT_AFFECTIVE_TRAITS, deleteSchool } from '../../services/schoolService';
 import { runTenantDryRunVerification, DryRunReport } from '../../services/tenantMigrationService';
+import { GradingSettingsTab } from '../../components/settings/GradingSettingsTab';
 
 export const SettingsPage: React.FC = () => {
   const { settings, updateSettings, schoolId } = useSchool();
   const { currentUser, role, isAtLeastAdmin, updateUserPassword, resetPassword } = useAuth();
 
   // Active tab: teachers default to 'report_template', admins can switch
-  const [activeTab, setActiveTab] = useState<'report_template' | 'general_profile' | 'database' | 'security'>('report_template');
+  const [activeTab, setActiveTab] = useState<'grading_settings' | 'report_template' | 'general_profile' | 'database' | 'security'>('grading_settings');
 
   // Security state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -504,6 +505,19 @@ export const SettingsPage: React.FC = () => {
       <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto">
         <button
           type="button"
+          onClick={() => setActiveTab('grading_settings')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+            activeTab === 'grading_settings'
+              ? 'bg-emerald-900 text-white shadow-xs'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Sliders className="w-4 h-4" />
+          Grading & Report Card Settings
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab('report_template')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
             activeTab === 'report_template'
@@ -512,7 +526,7 @@ export const SettingsPage: React.FC = () => {
           }`}
         >
           <Award className="w-4 h-4" />
-          Report Card & Evaluation Template
+          Report Layout & Appraisal Remarks
         </button>
 
         <button
@@ -563,6 +577,9 @@ export const SettingsPage: React.FC = () => {
           <span className="font-semibold">Settings and evaluation templates updated and saved successfully!</span>
         </div>
       )}
+
+      {/* TAB 0: Grading & Report Card Settings */}
+      {activeTab === 'grading_settings' && <GradingSettingsTab />}
 
       {/* TAB 1: Report Card & Evaluation Template Settings */}
       {activeTab === 'report_template' && (

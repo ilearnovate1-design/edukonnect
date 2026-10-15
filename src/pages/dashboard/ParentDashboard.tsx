@@ -549,30 +549,41 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
                     <thead className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600 uppercase">
                       <tr>
                         <th className="px-5 py-3">Subject</th>
-                        <th className="px-5 py-3 text-center">CA (30)</th>
-                        <th className="px-5 py-3 text-center">Exam (70)</th>
-                        <th className="px-5 py-3 text-center">Total (100)</th>
+                        <th className="px-5 py-3 text-center">Continuous Assessment</th>
+                        <th className="px-5 py-3 text-center">Examination</th>
+                        <th className="px-5 py-3 text-center">Total Score</th>
                         <th className="px-5 py-3 text-center">Grade</th>
                         <th className="px-5 py-3">Remarks</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {results.map((r) => (
-                        <tr key={r.resultId} className="hover:bg-slate-50/50">
-                          <td className="px-5 py-3 font-semibold text-slate-900 capitalize">
-                            {r.subjectId.replace('sub-', '')}
-                          </td>
-                          <td className="px-5 py-3 text-center text-slate-600">{r.caScore}</td>
-                          <td className="px-5 py-3 text-center text-slate-600">{r.examScore}</td>
-                          <td className="px-5 py-3 text-center font-bold text-slate-900">{r.totalScore}</td>
-                          <td className="px-5 py-3 text-center font-bold text-emerald-800">
-                            <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200">
-                              {r.grade}
-                            </span>
-                          </td>
-                          <td className="px-5 py-3 text-xs text-slate-500">{r.remark || '—'}</td>
-                        </tr>
-                      ))}
+                      {results.map((r) => {
+                        // Support dynamic component scores
+                        const caDisplay = r.componentScores
+                          ? Object.entries(r.componentScores)
+                              .filter(([k]) => k !== 'exam')
+                              .map(([_, v]) => v ?? '—')
+                              .join(' + ') || (r.caScore ?? 0)
+                          : (r.caScore ?? 0);
+                        const examDisplay = r.componentScores?.['exam'] ?? r.examScore ?? 0;
+
+                        return (
+                          <tr key={r.resultId} className="hover:bg-slate-50/50">
+                            <td className="px-5 py-3 font-semibold text-slate-900 capitalize">
+                              {r.subjectId.replace('sub-', '').replace(/-/g, ' ')}
+                            </td>
+                            <td className="px-5 py-3 text-center text-slate-600 font-mono">{caDisplay}</td>
+                            <td className="px-5 py-3 text-center text-slate-600 font-mono">{examDisplay}</td>
+                            <td className="px-5 py-3 text-center font-bold text-slate-900">{r.totalScore}</td>
+                            <td className="px-5 py-3 text-center font-bold text-emerald-800">
+                              <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 font-black">
+                                {r.grade}
+                              </span>
+                            </td>
+                            <td className="px-5 py-3 text-xs text-slate-500">{r.remark || '—'}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

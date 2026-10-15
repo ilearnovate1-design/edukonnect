@@ -102,28 +102,45 @@ export const printDocumentElement = (elementId: string, documentTitle: string = 
   const fullHtml = generateStandaloneHtml(element.outerHTML, documentTitle);
 
   try {
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.open();
-      printWindow.document.write(fullHtml);
-      printWindow.document.close();
-      
-      // Wait for resources to load then trigger print
+    // Hidden iframe printing ensures 100% reliability in sandboxed previews without popup blocker interference
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.setAttribute('title', documentTitle);
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(fullHtml);
+      doc.close();
+
       setTimeout(() => {
         try {
-          printWindow.focus();
-          printWindow.print();
-        } catch (e) {
-          console.warn('Print window direct print fallback:', e);
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+        } catch (printErr) {
+          console.warn('Iframe print error, falling back:', printErr);
+          window.print();
+        } finally {
+          setTimeout(() => {
+            if (document.body.contains(iframe)) {
+              document.body.removeChild(iframe);
+            }
+          }, 2000);
         }
       }, 500);
       return;
     }
   } catch (err) {
-    console.warn('Window.open failed for print, falling back to direct window.print():', err);
+    console.warn('Iframe print failed, falling back:', err);
   }
 
-  // Fallback if popup blocked
+  // Fallback
   window.print();
 };
 

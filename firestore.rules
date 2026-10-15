@@ -253,10 +253,32 @@ service cloud.firestore {
 
     // 11. Terminal Examination & CA Results
     match /results/{resultId} {
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data) && (
+        getUserRole() != 'PARENT' || resource.data.get('status', 'DRAFT') == 'PUBLISHED'
+      );
+      allow list: if isAuthenticated();
+      allow create: if isAuthenticated() && (
+        isAdmin() || (
+          isTeacher() && 
+          request.resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED']
+        )
+      ) && canCreateInTenant();
+      allow update: if isAuthenticated() && (
+        isAdmin() || (
+          isTeacher() && 
+          request.resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED'] &&
+          resource.data.get('status', 'DRAFT') != 'PUBLISHED'
+        )
+      ) && canUpdateInTenant();
+      allow delete: if isAdmin() && canDeleteInTenant();
+    }
+
+    // 11b. Configurable Grading Profiles & Standards
+    match /gradingProfiles/{profileId} {
       allow get: if isAuthenticated() && docMatchesTenant(resource.data);
       allow list: if isAuthenticated();
-      allow create: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canCreateInTenant();
-      allow update: if isAuthenticated() && (isAdmin() || isTeacher() || getUserRole() != 'PARENT') && canUpdateInTenant();
+      allow create: if isAdmin() && canCreateInTenant();
+      allow update: if isAdmin() && canUpdateInTenant();
       allow delete: if isAdmin() && canDeleteInTenant();
     }
 

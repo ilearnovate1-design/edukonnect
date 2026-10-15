@@ -1,13 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
-import { Student, SchoolClass, Result, Subject, StudentEvaluation, AffectiveTraitConfig } from '../../types';
+import { 
+  Student, 
+  SchoolClass, 
+  Result, 
+  Subject, 
+  StudentEvaluation, 
+  AffectiveTraitConfig,
+  GradingProfile,
+  AssessmentComponentConfig
+} from '../../types';
 import { useSchool } from '../../contexts/SchoolContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatDate } from '../../utils/formatters';
 import { printDocumentElement, downloadDocumentAsFile } from '../../utils/documentGenerator';
 import { getStudentEvaluation, saveStudentEvaluation } from '../../services/evaluationService';
 import { DEFAULT_REPORT_TEMPLATE, DEFAULT_AFFECTIVE_TRAITS } from '../../services/schoolService';
+import { DEFAULT_GRADING_PROFILES } from '../../services/assessmentEngine';
 import { 
   Printer, 
   Download, 
@@ -21,6 +31,7 @@ import {
   RotateCcw,
   Check,
   AlertCircle,
+  AlertTriangle,
   Sparkles,
   Sliders,
   X
@@ -34,10 +45,12 @@ interface ReportCardModalProps {
   results: Result[];
   subjects?: Subject[];
   attendanceSummary?: { total: number; present: number; absent: number; late: number; rate: number };
-  classPosition?: string;
+  classPosition?: string | number;
+  classAverage?: number;
   totalStudentsInClass?: number;
   term?: string;
   session?: string;
+  gradingProfile?: GradingProfile;
 }
 
 const formatSubjectTitle = (subjectId: string, subjectsList?: Subject[]): string => {
@@ -80,11 +93,13 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
   schoolClass,
   results,
   subjects = [],
-  attendanceSummary = { total: 60, present: 58, absent: 2, late: 0, rate: 97 },
+  attendanceSummary,
   classPosition,
+  classAverage,
   totalStudentsInClass = 25,
   term,
   session,
+  gradingProfile,
 }) => {
   const { settings } = useSchool();
   const { role, currentUser, currentTeacher } = useAuth();
@@ -97,11 +112,68 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
   const currentTerm = term || settings.currentTerm;
   const currentSession = session || settings.currentAcademicSession;
 
-  // Calculation of scores
-  const totalPossible = results.length * 100;
+  // Resolve Active Grading Profile or Snapshot for Historical Integrity
+  const effectiveProfile: GradingProfile = React.useMemo(() => {
+    // 1. If explicit profile prop provided
+    if (gradingProfile) return gradingProfile;
+
+    // 2. If results have an immutable snapshot from time of calculation
+    const snap = results[0]?.gradingProfileSnapshot;
+    if (snap) {
+      return {
+        profileId: snap.profileId,
+        schoolId: 'default',
+        name: snap.name,
+        levelCategory: 'PRIMARY',
+        calculationMethod: snap.calculationMethod,
+        treatMissingAsZero: snap.treatMissingAsZero,
+        roundingPolicy: snap.roundingPolicy,
+        components: snap.components,
+        gradeBands: snap.gradeBands,
+        version: snap.version,
+      };
+    }
+
+    // 3. Fallback based on class level or default
+    return {
+      ...DEFAULT_GRADING_PROFILES.PRIMARY,
+      profileId: 'default-primary',
+      schoolId: 'default',
+    };
+  }, [gradingProfile, results]);
+
+  const displaySettings = effectiveProfile.displaySettings || {
+    showAttendance: true,
+    showPosition: true,
+    showClassAverage: true,
+    showStudentAverage: true,
+    showGradePoints: true,
+    showComponentBreakdown: true,
+    showPromotionStatus: true,
+    showAffectiveTraits: true,
+    showTeacherRemarks: true,
+    showPrincipalRemarks: true,
+    showNextTermDate: true,
+    showOfficialSeal: true,
+  };
+
+  const components: AssessmentComponentConfig[] = effectiveProfile.components || [
+    { id: 'ca', name: 'Continuous Assessment', maxScore: 30, weight: 30 },
+    { id: 'exam', name: 'Terminal Examination', maxScore: 70, weight: 70 },
+  ];
+
+  const totalPossiblePerSubject = effectiveProfile.calculationMethod === 'SUM'
+    ? components.reduce((sum, c) => sum + c.maxScore, 0)
+    : 100;
+
+  // Calculation of overall scores
+  const totalPossible = results.length * totalPossiblePerSubject;
   const totalScored = results.reduce((sum, r) => sum + (r.totalScore || 0), 0);
   const averageScore = results.length > 0 ? (totalScored / results.length).toFixed(1) : '0';
   const avgNum = parseFloat(averageScore);
+
+  // Check if any results are incomplete
+  const hasIncompleteResults = results.some(r => r.isIncomplete || r.grade === 'INC');
 
   // Determine standard automated template defaults based on average score
   let defaultTeacherRemark = reportTemplate.teacherAppraisalPass || 'A steady pupil capable of higher attainment.';
@@ -171,7 +243,6 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
             setCustomAffectiveScores(initialMap);
           }
         } else {
-          // Initialize with template defaults
           setCustomTeacherRemark(defaultTeacherRemark);
           setCustomPrincipalRemark(defaultPrincipalRemark);
           setCustomTeacherName(defaultTeacherName);
@@ -247,109 +318,119 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
   const activeTeacherRemark = customTeacherRemark || defaultTeacherRemark;
   const activePrincipalRemark = customPrincipalRemark || defaultPrincipalRemark;
   const activeTeacherName = customTeacherName || defaultTeacherName;
-  const canEdit = role === 'ADMIN' || role === 'TEACHER';
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Official Terminal Examination Report Card"
-      subtitle={`${student.firstName} ${student.lastName} • ${currentTerm} (${currentSession})`}
+      title={`Official Termly Report Card • ${student.firstName} ${student.lastName}`}
       maxWidth="3xl"
     >
-      <div className="space-y-4">
-        {/* Admin/Teacher Controls Bar */}
-        {canEdit && (
-          <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-slate-700">Educator Evaluation Controls:</span>
-              <span className="text-slate-500">Customize comments, Head of School's remark, & skills ratings for this report card.</span>
+      <div className="space-y-6">
+        {/* Actions Bar & Notice */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+          <div className="flex items-center gap-2">
+            <span className="p-1 bg-emerald-100 text-emerald-800 rounded-md">
+              <GraduationCap className="w-4 h-4" />
+            </span>
+            <div>
+              <span className="text-xs font-bold text-slate-800">
+                {currentTerm} ({currentSession}) • {effectiveProfile.name}
+              </span>
+              <p className="text-[11px] text-slate-500">
+                A4 Portrait print-ready layout with official seal, marks breakdown, and signatures.
+              </p>
             </div>
-            <div className="flex items-center gap-2">
+          </div>
+
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            {role !== 'PARENT' && (
               <Button
-                variant={isEditingRemarks ? 'secondary' : 'outline'}
                 size="sm"
+                variant="outline"
                 onClick={() => setIsEditingRemarks(!isEditingRemarks)}
-                leftIcon={isEditingRemarks ? <X className="w-3.5 h-3.5" /> : <Edit3 className="w-3.5 h-3.5" />}
+                leftIcon={<Edit3 className="w-3.5 h-3.5" />}
+                className="text-xs"
               >
                 {isEditingRemarks ? 'Close Editor' : 'Edit Remarks & Ratings'}
               </Button>
+            )}
+
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={handlePrint}
+              leftIcon={<Printer className="w-3.5 h-3.5" />}
+              className="text-xs font-bold shadow-xs"
+            >
+              Print / Save PDF
+            </Button>
+          </div>
+        </div>
+
+        {/* Warning if Incomplete Scores Detected */}
+        {hasIncompleteResults && (
+          <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <strong>Incomplete Assessment Notice:</strong> One or more subject scores are pending or marked as incomplete. Results will be labeled as incomplete until all components are provided.
             </div>
           </div>
         )}
 
-        {/* Live Inline Remarks & Ratings Editor */}
-        {canEdit && isEditingRemarks && (
-          <div className="p-4 sm:p-5 bg-emerald-50/70 border-2 border-emerald-300 rounded-xl space-y-4 text-xs animate-in fade-in duration-200">
-            <div className="flex items-center justify-between pb-3 border-b border-emerald-200">
-              <div>
-                <h4 className="font-bold text-emerald-950 text-sm flex items-center gap-1.5">
-                  <Sliders className="w-4 h-4 text-emerald-700" />
-                  Customize Student Appraisal, Remarks & Ratings
-                </h4>
-                <p className="text-[11px] text-emerald-700 mt-0.5">
-                  Changes made here override template defaults specifically for {student.firstName} {student.lastName}.
-                </p>
+        {/* Evaluation Remarks & Affective Domain Editor (Staff Only) */}
+        {isEditingRemarks && role !== 'PARENT' && (
+          <div className="p-4 sm:p-5 bg-emerald-50/60 border border-emerald-200 rounded-xl space-y-4 animate-in fade-in duration-200">
+            <div className="flex items-center justify-between border-b border-emerald-200 pb-2">
+              <div className="flex items-center gap-1.5 font-bold text-emerald-950 text-xs">
+                <Sliders className="w-4 h-4 text-emerald-700" />
+                Customize Teacher & Principal Remarks for this Student
               </div>
-
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setCustomTeacherRemark(defaultTeacherRemark);
-                    setCustomPrincipalRemark(defaultPrincipalRemark);
-                    setCustomTeacherName(defaultTeacherName);
-                  }}
-                  leftIcon={<RotateCcw className="w-3 h-3 text-slate-500" />}
-                >
-                  Reset Defaults
-                </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={handleSaveEvaluation}
-                  isLoading={isSavingEvaluation}
-                  leftIcon={<Save className="w-3.5 h-3.5" />}
-                >
-                  Save Evaluation
-                </Button>
-              </div>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={handleSaveEvaluation}
+                disabled={isSavingEvaluation}
+                leftIcon={<Save className="w-3.5 h-3.5" />}
+                className="text-xs"
+              >
+                {isSavingEvaluation ? 'Saving...' : 'Save Remarks & Ratings'}
+              </Button>
             </div>
 
-            {/* Teacher Appraisal & Recommendation Editor */}
+            {/* Teacher's Remark Editor */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="font-bold text-slate-800">
-                  Class Teacher's Appraisal & Recommendation:
+                <label className="text-xs font-bold text-slate-800">
+                  Class Teacher's Appraisal Remark:
                 </label>
                 <div className="flex items-center gap-1">
                   <span className="text-[10px] text-slate-500 mr-1">Presets:</span>
                   <button
                     type="button"
                     onClick={() => setCustomTeacherRemark(reportTemplate.teacherAppraisalDistinction)}
-                    className="px-1.5 py-0.5 text-[10px] bg-emerald-100 text-emerald-800 rounded hover:bg-emerald-200"
+                    className="px-1.5 py-0.5 text-[10px] bg-emerald-100 text-emerald-800 rounded hover:bg-emerald-200 cursor-pointer"
                   >
                     Distinction
                   </button>
                   <button
                     type="button"
                     onClick={() => setCustomTeacherRemark(reportTemplate.teacherAppraisalCredit)}
-                    className="px-1.5 py-0.5 text-[10px] bg-teal-100 text-teal-800 rounded hover:bg-teal-200"
+                    className="px-1.5 py-0.5 text-[10px] bg-teal-100 text-teal-800 rounded hover:bg-teal-200 cursor-pointer"
                   >
                     Credit
                   </button>
                   <button
                     type="button"
                     onClick={() => setCustomTeacherRemark(reportTemplate.teacherAppraisalPass)}
-                    className="px-1.5 py-0.5 text-[10px] bg-blue-100 text-blue-800 rounded hover:bg-blue-200"
+                    className="px-1.5 py-0.5 text-[10px] bg-blue-100 text-blue-800 rounded hover:bg-blue-200 cursor-pointer"
                   >
                     Pass
                   </button>
                   <button
                     type="button"
                     onClick={() => setCustomTeacherRemark(reportTemplate.teacherAppraisalTrial)}
-                    className="px-1.5 py-0.5 text-[10px] bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
+                    className="px-1.5 py-0.5 text-[10px] bg-amber-100 text-amber-800 rounded hover:bg-amber-200 cursor-pointer"
                   >
                     Trial
                   </button>
@@ -360,7 +441,7 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
                 value={customTeacherRemark}
                 onChange={(e) => setCustomTeacherRemark(e.target.value)}
                 placeholder="Enter teacher's comments and academic recommendation..."
-                className="w-full px-3 py-2 bg-white border border-emerald-300 rounded-lg text-xs focus:ring-2 focus:ring-emerald-600 focus:outline-hidden"
+                className="w-full px-3 py-2 bg-white border border-emerald-300 rounded-lg text-xs focus:ring-2 focus:ring-emerald-600 focus:outline-none"
               />
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-semibold text-slate-700">Teacher Signature Name:</span>
@@ -374,39 +455,39 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
               </div>
             </div>
 
-            {/* Principal / Head of School's Remark Editor */}
+            {/* Principal Remark Editor */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="font-bold text-slate-800">
-                  Principal / Head of School's Remark:
+                <label className="text-xs font-bold text-slate-800">
+                  Head of School / Principal's Remark:
                 </label>
                 <div className="flex items-center gap-1">
                   <span className="text-[10px] text-slate-500 mr-1">Presets:</span>
                   <button
                     type="button"
                     onClick={() => setCustomPrincipalRemark(reportTemplate.principalRemarkDistinction)}
-                    className="px-1.5 py-0.5 text-[10px] bg-emerald-100 text-emerald-800 rounded hover:bg-emerald-200"
+                    className="px-1.5 py-0.5 text-[10px] bg-emerald-100 text-emerald-800 rounded hover:bg-emerald-200 cursor-pointer"
                   >
                     Distinction
                   </button>
                   <button
                     type="button"
                     onClick={() => setCustomPrincipalRemark(reportTemplate.principalRemarkCredit)}
-                    className="px-1.5 py-0.5 text-[10px] bg-teal-100 text-teal-800 rounded hover:bg-teal-200"
+                    className="px-1.5 py-0.5 text-[10px] bg-teal-100 text-teal-800 rounded hover:bg-teal-200 cursor-pointer"
                   >
                     Credit
                   </button>
                   <button
                     type="button"
                     onClick={() => setCustomPrincipalRemark(reportTemplate.principalRemarkPass)}
-                    className="px-1.5 py-0.5 text-[10px] bg-blue-100 text-blue-800 rounded hover:bg-blue-200"
+                    className="px-1.5 py-0.5 text-[10px] bg-blue-100 text-blue-800 rounded hover:bg-blue-200 cursor-pointer"
                   >
                     Pass
                   </button>
                   <button
                     type="button"
                     onClick={() => setCustomPrincipalRemark(reportTemplate.principalRemarkTrial)}
-                    className="px-1.5 py-0.5 text-[10px] bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
+                    className="px-1.5 py-0.5 text-[10px] bg-amber-100 text-amber-800 rounded hover:bg-amber-200 cursor-pointer"
                   >
                     Trial
                   </button>
@@ -416,16 +497,16 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
                 rows={2}
                 value={customPrincipalRemark}
                 onChange={(e) => setCustomPrincipalRemark(e.target.value)}
-                placeholder="Enter Head of School's administrative assessment and stamp remark..."
-                className="w-full px-3 py-2 bg-white border border-emerald-300 rounded-lg text-xs focus:ring-2 focus:ring-emerald-600 focus:outline-hidden"
+                placeholder="Enter Head of School's administrative assessment and remark..."
+                className="w-full px-3 py-2 bg-white border border-emerald-300 rounded-lg text-xs focus:ring-2 focus:ring-emerald-600 focus:outline-none"
               />
             </div>
 
-            {/* Affective & Psychomotor Behavioral Domain Rating Editor */}
+            {/* Affective & Psychomotor Domain Rating Editor */}
             <div className="space-y-2 pt-2 border-t border-emerald-200">
               <div className="flex items-center justify-between">
-                <label className="font-bold text-slate-800">
-                  Affective & Psychomotor Skills Rating (1 - 5 Scale):
+                <label className="text-xs font-bold text-slate-800">
+                  Affective & Psychomotor Behavioral Scale:
                 </label>
                 <span className="text-[11px] text-emerald-800 font-medium">
                   5: Excellent | 4: Good | 3: Fair | 2: Poor | 1: Very Poor
@@ -446,9 +527,9 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
                             key={val}
                             type="button"
                             onClick={() => handleScoreTraitChange(key, val)}
-                            className={`w-5 h-5 rounded text-[11px] font-bold transition-all ${
+                            className={`w-5 h-5 rounded text-[11px] font-bold transition-all cursor-pointer ${
                               currentScore === val
-                                ? 'bg-emerald-700 text-white shadow-xs'
+                                ? 'bg-emerald-800 text-white shadow-xs scale-105'
                                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                             }`}
                           >
@@ -461,25 +542,13 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
                 })}
               </div>
             </div>
-
-            <div className="flex items-center justify-end pt-2">
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleSaveEvaluation}
-                isLoading={isSavingEvaluation}
-                leftIcon={<Save className="w-3.5 h-3.5" />}
-              >
-                Save Evaluation
-              </Button>
-            </div>
           </div>
         )}
 
         {evalSaveSuccess && (
           <div className="p-3 bg-emerald-100 border border-emerald-300 text-emerald-900 rounded-xl text-xs flex items-center gap-2">
             <Check className="w-4 h-4 text-emerald-700" />
-            <span className="font-bold">Appraisal, Remarks and Ratings saved successfully for this report card!</span>
+            <span className="font-bold">Remarks and Ratings saved successfully for this report card!</span>
           </div>
         )}
 
@@ -492,22 +561,22 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
           <div className="text-center border-b-2 border-emerald-900 pb-4 relative">
             <div className="flex items-center justify-center gap-3 mb-1">
               <div className="w-12 h-12 rounded-xl bg-emerald-900 text-white flex items-center justify-center font-black text-xl shadow-xs">
-                {settings.schoolName ? settings.schoolName.charAt(0) : 'S'}
+                {settings.schoolName ? settings.schoolName.charAt(0) : 'E'}
               </div>
               <div className="text-left sm:text-center">
                 <h1 className="text-xl sm:text-2xl font-black text-emerald-950 uppercase tracking-wide leading-tight">
                   {settings.schoolName}
                 </h1>
-                <p className="text-[11px] text-slate-600 font-medium">{settings.address}</p>
+                <p className="text-[11px] text-slate-600 font-medium">{settings.address || 'Lagos, Nigeria'}</p>
               </div>
             </div>
             
             <p className="text-[11px] text-slate-500">
-              Tel: {settings.phone} • Email: {settings.email} • Govt. Reg: ED/PRS/SCH/2019/842
+              Tel: {settings.phone || '+234 800 EDUKONNECT'} • Email: {settings.email || 'portal@edukonnect.ng'}
             </p>
             
             <div className="inline-block mt-2.5 px-6 py-1 bg-emerald-900 text-white text-xs font-black uppercase tracking-widest rounded-sm shadow-xs">
-              Continuous Assessment & Terminal Examination Report
+              Continuous Assessment & Terminal Examination Report Card
             </div>
           </div>
 
@@ -519,94 +588,146 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
             </div>
             <div>
               <span className="text-slate-500 block text-[10px] uppercase font-bold">Admission / Reg No.</span>
-              <strong className="text-slate-900 font-mono">{student.admissionNumber || 'STU-2026-N/A'}</strong>
+              <strong className="text-slate-900 font-mono">{student.admissionNumber || student.studentId}</strong>
             </div>
             <div>
               <span className="text-slate-500 block text-[10px] uppercase font-bold">Class / Grade Arm</span>
-              <strong className="text-slate-900 font-bold">{schoolClass ? schoolClass.name : 'Primary Class'}</strong>
+              <strong className="text-slate-900 font-bold">{schoolClass ? schoolClass.name : 'Class'}</strong>
             </div>
             <div>
               <span className="text-slate-500 block text-[10px] uppercase font-bold">Academic Session & Term</span>
               <strong className="text-slate-900 font-bold">{currentTerm} ({currentSession})</strong>
             </div>
-            <div>
-              <span className="text-slate-500 block text-[10px] uppercase font-bold">Total Enrolment in Class</span>
-              <span className="text-slate-800 font-bold">{totalStudentsInClass} Pupils</span>
-            </div>
-            <div>
-              <span className="text-slate-500 block text-[10px] uppercase font-bold">Term Attendance</span>
-              <span className="text-slate-800 font-bold">
-                {attendanceSummary.present} / {attendanceSummary.total} Days ({attendanceSummary.rate}%)
-              </span>
-            </div>
-            <div>
-              <span className="text-slate-500 block text-[10px] uppercase font-bold">Date of Birth / Gender</span>
-              <span className="text-slate-800 font-bold">{student.gender || 'Pupil'} • {formatDate(student.dateOfBirth)}</span>
-            </div>
-            <div>
-              <span className="text-slate-500 block text-[10px] uppercase font-bold">Overall Average & Status</span>
-              <span className="text-emerald-900 font-black text-sm">{averageScore}%</span>
-            </div>
+
+            {displaySettings.showPosition && classPosition !== undefined && (
+              <div>
+                <span className="text-slate-500 block text-[10px] uppercase font-bold">Class Cohort Position</span>
+                <span className="text-emerald-900 font-black text-sm">
+                  {classPosition}{classPosition === 1 ? 'st' : classPosition === 2 ? 'nd' : classPosition === 3 ? 'rd' : 'th'} Position
+                </span>
+              </div>
+            )}
+
+            {displaySettings.showAttendance && (
+              <div>
+                <span className="text-slate-500 block text-[10px] uppercase font-bold">Term Attendance</span>
+                <span className="text-slate-800 font-bold">
+                  {attendanceSummary && attendanceSummary.total > 0
+                    ? `${attendanceSummary.present} / ${attendanceSummary.total} Days (${attendanceSummary.rate}%)`
+                    : 'Attendance Not Recorded'}
+                </span>
+              </div>
+            )}
+
+            {displaySettings.showStudentAverage && (
+              <div>
+                <span className="text-slate-500 block text-[10px] uppercase font-bold">Student Overall Average</span>
+                <span className="text-emerald-900 font-black text-sm">{averageScore}%</span>
+              </div>
+            )}
+
+            {displaySettings.showClassAverage && classAverage !== undefined && (
+              <div>
+                <span className="text-slate-500 block text-[10px] uppercase font-bold">Class Cohort Average</span>
+                <span className="text-slate-800 font-bold">{classAverage}%</span>
+              </div>
+            )}
           </div>
 
-          {/* Academic Results Table */}
+          {/* Academic Results Table - Configurable Dynamic Components */}
           <div className="overflow-x-auto rounded-lg border border-slate-300">
             <table className="w-full text-xs text-left">
               <thead className="bg-emerald-900 text-white font-bold text-[11px] uppercase tracking-wider">
                 <tr>
                   <th className="px-3.5 py-2">Academic Subject</th>
-                  <th className="px-2.5 py-2 text-center">CA (30)</th>
-                  <th className="px-2.5 py-2 text-center">Exam (70)</th>
-                  <th className="px-2.5 py-2 text-center">Total (100)</th>
+                  {displaySettings.showComponentBreakdown !== false && components.map((comp) => (
+                    <th key={comp.id} className="px-2.5 py-2 text-center">
+                      <div>{comp.name}</div>
+                      <div className="text-[9px] font-normal opacity-80">({comp.maxScore})</div>
+                    </th>
+                  ))}
+                  <th className="px-2.5 py-2 text-center">Total ({totalPossiblePerSubject})</th>
                   <th className="px-2.5 py-2 text-center">Grade</th>
-                  <th className="px-3 py-2 text-left">Teacher Remark</th>
+                  {displaySettings.showGradePoints && (
+                    <th className="px-2.5 py-2 text-center">GP</th>
+                  )}
+                  <th className="px-3 py-2 text-left">Remark</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 font-medium">
                 {results.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-6 text-center text-slate-400 italic">
+                    <td colSpan={components.length + 5} className="px-4 py-6 text-center text-slate-400 italic">
                       No examination marks registered for this pupil in {currentTerm} ({currentSession}).
                     </td>
                   </tr>
                 ) : (
-                  results.map((r, index) => (
-                    <tr key={r.resultId || index} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50/70'}>
-                      <td className="px-3.5 py-2 font-bold text-slate-900">
-                        {formatSubjectTitle(r.subjectId, subjects)}
-                      </td>
-                      <td className="px-2.5 py-2 text-center text-slate-700">{r.caScore ?? 0}</td>
-                      <td className="px-2.5 py-2 text-center text-slate-700">{r.examScore ?? 0}</td>
-                      <td className="px-2.5 py-2 text-center font-bold text-slate-900">{r.totalScore ?? 0}</td>
-                      <td className="px-2.5 py-2 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
-                          r.grade === 'A' ? 'bg-emerald-100 text-emerald-800' :
-                          r.grade === 'B' ? 'bg-teal-100 text-teal-800' :
-                          r.grade === 'C' ? 'bg-blue-100 text-blue-800' :
-                          r.grade === 'D' ? 'bg-amber-100 text-amber-800' :
-                          'bg-rose-100 text-rose-800'
-                        }`}>
-                          {r.grade || '—'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-slate-600 italic text-[11px]">
-                        {r.teacherComment || r.remark || 'Satisfactory work'}
-                      </td>
-                    </tr>
-                  ))
+                  results.map((r, index) => {
+                    const isInc = r.isIncomplete || r.grade === 'INC';
+
+                    return (
+                      <tr key={r.resultId || index} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50/70'}>
+                        <td className="px-3.5 py-2 font-bold text-slate-900">
+                          {formatSubjectTitle(r.subjectId, subjects)}
+                        </td>
+
+                        {/* Component Scores */}
+                        {displaySettings.showComponentBreakdown !== false && components.map((comp) => {
+                          const val = r.componentScores?.[comp.id] ?? (comp.id === 'exam' ? r.examScore : r.caScore);
+                          return (
+                            <td key={comp.id} className="px-2.5 py-2 text-center text-slate-700 font-mono">
+                              {val !== null && val !== undefined ? val : <span className="text-amber-600 font-bold">INC</span>}
+                            </td>
+                          );
+                        })}
+
+                        {/* Total Score */}
+                        <td className="px-2.5 py-2 text-center font-bold text-slate-900">
+                          {r.totalScore ?? 0}
+                        </td>
+
+                        {/* Grade */}
+                        <td className="px-2.5 py-2 text-center">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                            r.grade === 'A' || r.grade === 'A1' ? 'bg-emerald-100 text-emerald-800' :
+                            r.grade === 'B' || r.grade?.startsWith('B') ? 'bg-teal-100 text-teal-800' :
+                            r.grade === 'C' || r.grade?.startsWith('C') ? 'bg-blue-100 text-blue-800' :
+                            r.grade === 'INC' ? 'bg-amber-100 text-amber-800' :
+                            'bg-rose-100 text-rose-800'
+                          }`}>
+                            {r.grade || '—'}
+                          </span>
+                        </td>
+
+                        {/* Optional Grade Points */}
+                        {displaySettings.showGradePoints && (
+                          <td className="px-2.5 py-2 text-center font-mono text-slate-700">
+                            {r.gradePoint !== undefined ? r.gradePoint.toFixed(1) : '—'}
+                          </td>
+                        )}
+
+                        {/* Remark */}
+                        <td className="px-3 py-2 text-slate-600 italic text-[11px]">
+                          {r.teacherComment || r.remark || (isInc ? 'Incomplete' : 'Satisfactory')}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
               {results.length > 0 && (
                 <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-300">
                   <tr>
                     <td className="px-3.5 py-2 text-left uppercase text-slate-800">Overall Summary</td>
-                    <td colSpan={2} className="px-2.5 py-2 text-center text-slate-700">
-                      Marks Scored: <strong className="text-slate-900">{totalScored}</strong> / {totalPossible}
-                    </td>
+                    {displaySettings.showComponentBreakdown !== false && (
+                      <td colSpan={components.length} className="px-2.5 py-2 text-center text-slate-700">
+                        Marks Scored: <strong className="text-slate-900">{totalScored}</strong> / {totalPossible}
+                      </td>
+                    )}
                     <td className="px-2.5 py-2 text-center font-black text-emerald-900 text-sm">
                       {averageScore}%
                     </td>
-                    <td colSpan={2} className="px-3 py-2 text-left">
+                    <td colSpan={displaySettings.showGradePoints ? 3 : 2} className="px-3 py-2 text-left">
                       <span className={`px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider border ${verdictColor}`}>
                         {resultVerdict}
                       </span>
@@ -618,118 +739,119 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
           </div>
 
           {/* Affective & Psychomotor Behavioral Domain Rating */}
-          <div className="border border-slate-200 rounded-lg p-3 bg-slate-50/70 space-y-2">
-            <div className="flex items-center justify-between text-xs font-bold text-slate-800 uppercase tracking-wider">
-              <span>{reportTemplate.ratingScaleDescription || 'Affective & Psychomotor Skills Rating (5: Excellent | 4: Good | 3: Fair | 2: Poor | 1: Very Poor)'}</span>
+          {displaySettings.showAffectiveTraits && (
+            <div className="border border-slate-200 rounded-lg p-3 bg-slate-50/70 space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-800 uppercase tracking-wider">
+                <span>{reportTemplate.ratingScaleDescription || 'Affective & Psychomotor Skills Rating (5: Excellent | 4: Good | 3: Fair | 2: Poor | 1: Very Poor)'}</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                {traitsList.map((t) => {
+                  const key = t.id || t.trait;
+                  const score = customAffectiveScores[key] ?? t.defaultScore ?? 4;
+                  return (
+                    <div key={key} className="flex items-center justify-between p-1.5 bg-white border border-slate-200 rounded px-2">
+                      <span className="text-slate-600 truncate mr-1" title={t.trait}>{t.trait}:</span>
+                      <span className="font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                        {score} / 5
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-              {traitsList.map((t) => {
-                const key = t.id || t.trait;
-                const score = customAffectiveScores[key] ?? t.defaultScore ?? 4;
-                return (
-                  <div key={key} className="flex items-center justify-between p-1.5 bg-white border border-slate-200 rounded px-2">
-                    <span className="text-slate-600 truncate mr-1" title={t.trait}>{t.trait}:</span>
-                    <span className="font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
-                      {score} / 5
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          )}
 
           {/* Grading Scale Key */}
           <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-[10px] text-slate-600 flex flex-wrap justify-between gap-1">
             <span className="font-bold text-slate-800 uppercase">Grading Scale:</span>
-            {settings.gradingScale && settings.gradingScale.length > 0 ? (
-              settings.gradingScale.map((g) => (
+            {effectiveProfile.gradeBands && effectiveProfile.gradeBands.length > 0 ? (
+              effectiveProfile.gradeBands.map((g) => (
                 <span key={g.grade}>
                   {g.min}-{g.max}: <strong>{g.grade} ({g.remark})</strong>
                 </span>
               ))
             ) : (
-              <>
-                <span>70-100: <strong>A (Distinction)</strong></span>
-                <span>60-69: <strong>B (Very Good)</strong></span>
-                <span>50-59: <strong>C (Credit)</strong></span>
-                <span>45-49: <strong>D (Pass)</strong></span>
-                <span>40-44: <strong>E (Fair)</strong></span>
-                <span>0-39: <strong>F (Fail)</strong></span>
-              </>
+              <span>75-100: A | 65-74: B | 50-64: C | 40-49: D | 0-39: F</span>
             )}
           </div>
 
           {/* Teacher & Principal Remarks with Seals */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
             {/* Teacher's Appraisal */}
-            <div className="p-3 bg-white border border-slate-300 rounded-lg space-y-1.5">
-              <span className="font-bold text-emerald-950 uppercase text-[10px] block">
-                Class Teacher's Appraisal & Recommendation:
-              </span>
-              <p className="italic text-slate-700 min-h-8 text-[11px] leading-relaxed">
-                "{activeTeacherRemark}"
-              </p>
-              <div className="pt-3 flex items-end justify-between border-t border-slate-200">
-                <div>
-                  <div className="font-serif italic font-semibold text-emerald-900 text-xs">
-                    {activeTeacherName}
+            {displaySettings.showTeacherRemarks && (
+              <div className="p-3 bg-white border border-slate-300 rounded-lg space-y-1.5">
+                <span className="font-bold text-emerald-950 uppercase text-[10px] block">
+                  Class Teacher's Appraisal & Recommendation:
+                </span>
+                <p className="italic text-slate-700 min-h-8 text-[11px] leading-relaxed">
+                  "{activeTeacherRemark}"
+                </p>
+                <div className="pt-3 flex items-end justify-between border-t border-slate-200">
+                  <div>
+                    <div className="font-serif italic font-semibold text-emerald-900 text-xs">
+                      {activeTeacherName}
+                    </div>
+                    <span className="text-[10px] text-slate-400 block">
+                      {reportTemplate.teacherTitle || 'Class Teacher Signature'}
+                    </span>
                   </div>
-                  <span className="text-[10px] text-slate-400 block">
-                    {reportTemplate.teacherTitle || 'Class Teacher Signature'}
-                  </span>
+                  <span className="text-[10px] text-slate-500">{formatDate(new Date())}</span>
                 </div>
-                <span className="text-[10px] text-slate-500">{formatDate(new Date())}</span>
               </div>
-            </div>
+            )}
 
             {/* Principal / Head of School's Remark */}
-            <div className="p-3 bg-white border border-slate-300 rounded-lg space-y-1.5 relative overflow-hidden">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-emerald-950 uppercase text-[10px] block">
-                  Principal / Head of School's Remark:
-                </span>
-                {reportTemplate.showOfficialSeal !== false && (
-                  <span className="text-[9px] px-1.5 py-0.5 bg-emerald-800 text-white rounded font-bold uppercase">
-                    {reportTemplate.officialSealText || 'Official Seal'}
+            {displaySettings.showPrincipalRemarks && (
+              <div className="p-3 bg-white border border-slate-300 rounded-lg space-y-1.5 relative overflow-hidden">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-emerald-950 uppercase text-[10px] block">
+                    Principal / Head of School's Remark:
                   </span>
-                )}
-              </div>
-              <p className="italic text-slate-700 min-h-8 text-[11px] leading-relaxed">
-                "{activePrincipalRemark}"
-              </p>
-              <div className="pt-3 flex items-end justify-between border-t border-slate-200">
-                <div>
-                  <div className="font-serif italic font-semibold text-emerald-900 text-xs">
-                    {reportTemplate.principalName || 'Dr. E. O. Okonjo (PhD)'}
-                  </div>
-                  <span className="text-[10px] text-slate-400 block">
-                    {reportTemplate.principalTitle || 'Head of School Signature & Stamp'}
-                  </span>
+                  {displaySettings.showOfficialSeal && (
+                    <span className="text-[9px] px-1.5 py-0.5 bg-emerald-800 text-white rounded font-bold uppercase">
+                      {reportTemplate.officialSealText || 'Official Seal'}
+                    </span>
+                  )}
                 </div>
-                {reportTemplate.showOfficialSeal !== false && (
-                  <div className="border border-emerald-700 text-emerald-800 px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider bg-emerald-50">
-                    {reportTemplate.officialSealText || 'APPROVED'}
+                <p className="italic text-slate-700 min-h-8 text-[11px] leading-relaxed">
+                  "{activePrincipalRemark}"
+                </p>
+                <div className="pt-3 flex items-end justify-between border-t border-slate-200">
+                  <div>
+                    <div className="font-serif italic font-semibold text-emerald-900 text-xs">
+                      {reportTemplate.principalName || 'Head of School'}
+                    </div>
+                    <span className="text-[10px] text-slate-400 block">
+                      {reportTemplate.principalTitle || 'Head of School Signature & Stamp'}
+                    </span>
                   </div>
-                )}
+                  {displaySettings.showOfficialSeal && (
+                    <div className="border border-emerald-700 text-emerald-800 px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider bg-emerald-50">
+                      {reportTemplate.officialSealText || 'APPROVED'}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Next Term Resumption & Fees Notice */}
-          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs flex flex-col sm:flex-row items-center justify-between gap-2">
-            <div>
-              <span className="text-slate-600 block text-[11px]">Next Academic Term Resumption Date:</span>
-              <strong className="text-emerald-950 font-bold text-sm">
-                {formatDate(settings.nextTermResumptionDate || '2026-09-21')}
-              </strong>
+          {displaySettings.showNextTermDate && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs flex flex-col sm:flex-row items-center justify-between gap-2">
+              <div>
+                <span className="text-slate-600 block text-[11px]">Next Academic Term Resumption Date:</span>
+                <strong className="text-emerald-950 font-bold text-sm">
+                  {formatDate(settings.nextTermResumptionDate || '2026-09-21')}
+                </strong>
+              </div>
+              <div className="text-right sm:text-right text-[11px] text-slate-600">
+                <span>Status: <strong className="text-emerald-800">Clearance Verified</strong></span>
+                <p className="text-[10px] text-slate-500">
+                  {reportTemplate.clearanceNotice || 'Please present this report card upon resumption.'}
+                </p>
+              </div>
             </div>
-            <div className="text-right sm:text-right text-[11px] text-slate-600">
-              <span>Status: <strong className="text-emerald-800">Clearance Verified</strong></span>
-              <p className="text-[10px] text-slate-500">
-                {reportTemplate.clearanceNotice || 'Please present this report card upon resumption.'}
-              </p>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Modal Controls */}
@@ -750,7 +872,7 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
               variant="primary" 
               onClick={handlePrint} 
               leftIcon={<Printer className="w-4 h-4" />}
-              className="flex-1 sm:flex-none"
+              className="flex-1 sm:flex-none font-bold"
             >
               Print Report Card
             </Button>
