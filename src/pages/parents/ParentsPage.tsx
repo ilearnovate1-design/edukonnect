@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  collection, getDocs, doc, setDoc, updateDoc, serverTimestamp 
+  collection, getDocs, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where 
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { Parent, Student } from '../../types';
@@ -15,7 +15,7 @@ import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
 
 export const ParentsPage: React.FC = () => {
-  const { role, currentUser } = useAuth();
+  const { role, currentUser, appUser, isSuperAdmin } = useAuth();
   const { schoolId } = useSchool();
   const [parents, setParents] = useState<Parent[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
@@ -124,17 +124,35 @@ export const ParentsPage: React.FC = () => {
     setSaving(true);
     setFormError('');
     try {
+      // Authoritative Admin School Derivation
+      const adminSchool = isSuperAdmin ? (schoolId || appUser?.schoolId || '') : (appUser?.schoolId || schoolId || '');
+      let targetSchoolId = '';
+
+      if (editingParent) {
+        targetSchoolId = editingParent.schoolId || adminSchool;
+        if (!isSuperAdmin && editingParent.schoolId && editingParent.schoolId !== adminSchool) {
+          throw new Error('Unauthorized: You can only modify parents belonging to your assigned school.');
+        }
+      } else {
+        targetSchoolId = adminSchool;
+      }
+
+      if (!targetSchoolId || !targetSchoolId.trim()) {
+        throw new Error('Cannot save parent: Your administrator account has no verified school membership. Please configure your school first.');
+      }
+
+      const normalizedSchoolId = targetSchoolId.trim().toLowerCase();
+      const normalizedEmail = email.trim().toLowerCase();
       const pId = editingParent?.parentId || `parent-${Date.now()}`;
       const parentDocRef = doc(db, 'parents', pId);
-      const targetSchoolId = editingParent?.schoolId || schoolId || 'default';
 
       const payload: any = {
         parentId: pId,
-        schoolId: targetSchoolId,
+        schoolId: normalizedSchoolId,
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         phone: phone.trim(),
-        email: email.trim().toLowerCase(),
+        email: normalizedEmail,
         relationship,
         occupation: occupation.trim() || undefined,
         address: address.trim() || undefined,
@@ -143,19 +161,50 @@ export const ParentsPage: React.FC = () => {
       };
 
       // Provision account if new
+      let resolvedUserId = editingParent?.userId;
       if (!editingParent && tempPassword) {
         try {
           const { uid } = await provisionAccount(
-            email.trim(),
+            normalizedEmail,
             tempPassword,
-            `${firstName} ${lastName}`,
+            `${firstName.trim()} ${lastName.trim()}`,
             'PARENT',
-            targetSchoolId,
+            normalizedSchoolId,
             { parentId: pId }
           );
+          resolvedUserId = uid;
           payload.userId = uid;
         } catch (provErr: any) {
-          console.warn('Auto-provisioning failed:', provErr);
+          console.warn('Auto-provisioning notice (account may already exist):', provErr);
+        }
+      }
+
+      // If user ID was not assigned yet, check if a user document exists with this email
+      if (!resolvedUserId) {
+        try {
+          const uSnap = await getDocs(query(collection(db, 'users'), where('email', '==', normalizedEmail)));
+          if (!uSnap.empty) {
+            resolvedUserId = uSnap.docs[0].id;
+            payload.userId = resolvedUserId;
+          }
+        } catch (lookupErr) {
+          console.warn('User lookup notice:', lookupErr);
+        }
+      }
+
+      // Keep user doc securely in sync with verified schoolId, role, and parentId
+      if (resolvedUserId) {
+        try {
+          await setDoc(doc(db, 'users', resolvedUserId), {
+            schoolId: normalizedSchoolId,
+            role: 'PARENT',
+            parentId: pId,
+            displayName: `${firstName.trim()} ${lastName.trim()}`,
+            approvalStatus: 'APPROVED',
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        } catch (syncErr) {
+          console.warn('User sync notice:', syncErr);
         }
       }
 
@@ -171,8 +220,13 @@ export const ParentsPage: React.FC = () => {
 
       await setDoc(parentDocRef, payload, { merge: true });
 
-      // Link / unlink selected children
+      // Link / unlink selected children - strictly within current school
       for (const student of students) {
+        // Enforce school isolation for student-parent relationship
+        if (student.schoolId && student.schoolId !== normalizedSchoolId) {
+          continue;
+        }
+
         const isSelected = selectedChildIds.includes(student.studentId);
         const currentParents = student.parentIds || [];
         const hasParent = currentParents.includes(pId);
@@ -197,8 +251,8 @@ export const ParentsPage: React.FC = () => {
         editingParent ? 'PARENT_UPDATED' : 'PARENT_CREATED',
         'parents',
         pId,
-        `${editingParent ? 'Updated' : 'Added'} parent ${firstName} ${lastName}`,
-        targetSchoolId
+        `${editingParent ? 'Updated' : 'Added'} parent ${firstName} ${lastName} for school ${normalizedSchoolId}`,
+        normalizedSchoolId
       );
 
       setShowModal(false);

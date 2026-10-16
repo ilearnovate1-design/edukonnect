@@ -27,6 +27,15 @@ export const provisionAccount = async (
   schoolId: string,
   extraData: Record<string, any> = {}
 ): Promise<{ uid: string }> => {
+  if (!schoolId || !schoolId.trim()) {
+    throw new Error('Provisioning failed: A verified, non-empty schoolId is required.');
+  }
+  if (role === 'SUPER_ADMIN') {
+    throw new Error('Provisioning failed: Cannot provision SUPER_ADMIN accounts via school admin portal.');
+  }
+
+  const normalizedSchoolId = schoolId.trim().toLowerCase();
+
   // 1. Initialize a secondary Firebase App
   const secondaryAppName = `provision-${Date.now()}`;
   const secondaryApp = initializeApp(config, secondaryAppName);
@@ -48,7 +57,8 @@ export const provisionAccount = async (
       email: email.toLowerCase().trim(),
       displayName,
       role,
-      schoolId,
+      schoolId: normalizedSchoolId,
+      approvalStatus: 'APPROVED',
       active: true,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),

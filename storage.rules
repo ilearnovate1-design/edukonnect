@@ -19,7 +19,7 @@ service firebase.storage {
     function getUserSchoolId() {
       return isAuthenticated() && firestore.exists(/databases/ai-studio-schoolmanagement-f22373cb-fd74-43c2-acfb-7e771274cdb4/documents/users/$(request.auth.uid)) && 'schoolId' in getUserData() && getUserData().schoolId != null
         ? getUserData().schoolId
-        : 'default';
+        : '';
     }
 
     function isSuperAdmin() {
@@ -47,7 +47,7 @@ service firebase.storage {
     }
 
     function matchesTenant(targetSchoolId) {
-      return isSuperAdmin() || targetSchoolId == getUserSchoolId();
+      return isSuperAdmin() || (getUserSchoolId() != '' && targetSchoolId == getUserSchoolId());
     }
 
     // --- Tenant-Scoped Storage Paths: /{schoolId}/... ---

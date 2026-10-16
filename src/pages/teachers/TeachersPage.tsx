@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  collection, getDocs, doc, setDoc, updateDoc, deleteDoc, serverTimestamp 
+  collection, getDocs, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where 
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { Teacher, SchoolClass, Subject } from '../../types';
@@ -15,7 +15,7 @@ import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
 
 export const TeachersPage: React.FC = () => {
-  const { role, currentUser } = useAuth();
+  const { role, currentUser, appUser, isSuperAdmin } = useAuth();
   const { schoolId } = useSchool();
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [classes, setClasses] = useState<SchoolClass[]>([]);
@@ -134,17 +134,36 @@ export const TeachersPage: React.FC = () => {
     setSaving(true);
     setFormError('');
     try {
+      // Authoritative Admin School Derivation
+      const adminSchool = isSuperAdmin ? (schoolId || appUser?.schoolId || '') : (appUser?.schoolId || schoolId || '');
+      let targetSchoolId = '';
+
+      if (editingTeacher) {
+        targetSchoolId = editingTeacher.schoolId || adminSchool;
+        // Non-superadmin cannot edit teacher belonging to another school
+        if (!isSuperAdmin && editingTeacher.schoolId && editingTeacher.schoolId !== adminSchool) {
+          throw new Error('Unauthorized: You can only modify teachers belonging to your assigned school.');
+        }
+      } else {
+        targetSchoolId = adminSchool;
+      }
+
+      if (!targetSchoolId || !targetSchoolId.trim()) {
+        throw new Error('Cannot save teacher: Your administrator account has no verified school membership. Please configure your school first.');
+      }
+
+      const normalizedSchoolId = targetSchoolId.trim().toLowerCase();
+      const normalizedEmail = email.trim().toLowerCase();
       const tId = editingTeacher?.teacherId || `teacher-${Date.now()}`;
       const teacherDocRef = doc(db, 'teachers', tId);
-      const targetSchoolId = editingTeacher?.schoolId || schoolId || 'default';
 
       const payload: any = {
         teacherId: tId,
-        schoolId: targetSchoolId,
+        schoolId: normalizedSchoolId,
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         phone: phone.trim(),
-        email: email.trim().toLowerCase(),
+        email: normalizedEmail,
         employeeId: employeeId.trim() || undefined,
         assignedClassIds,
         subjects: assignedSubjects,
@@ -154,20 +173,51 @@ export const TeachersPage: React.FC = () => {
       };
 
       // Provision account if new or if email changed (and no userId yet)
+      let resolvedUserId = editingTeacher?.userId;
       if (!editingTeacher && tempPassword) {
         try {
           const { uid } = await provisionAccount(
-            email.trim(),
+            normalizedEmail,
             tempPassword,
-            `${firstName} ${lastName}`,
+            `${firstName.trim()} ${lastName.trim()}`,
             'TEACHER',
-            targetSchoolId,
+            normalizedSchoolId,
             { teacherId: tId, assignedClassIds }
           );
+          resolvedUserId = uid;
           payload.userId = uid;
         } catch (provErr: any) {
-          console.warn('Auto-provisioning failed:', provErr);
-          // We still save the teacher record even if auth fails (e.g. user exists)
+          console.warn('Auto-provisioning notice (account may already exist):', provErr);
+        }
+      }
+
+      // If user ID was not assigned yet, check if a user document exists with this email
+      if (!resolvedUserId) {
+        try {
+          const uSnap = await getDocs(query(collection(db, 'users'), where('email', '==', normalizedEmail)));
+          if (!uSnap.empty) {
+            resolvedUserId = uSnap.docs[0].id;
+            payload.userId = resolvedUserId;
+          }
+        } catch (lookupErr) {
+          console.warn('User lookup notice:', lookupErr);
+        }
+      }
+
+      // Keep user doc securely in sync with verified schoolId, role, and assignments
+      if (resolvedUserId) {
+        try {
+          await setDoc(doc(db, 'users', resolvedUserId), {
+            schoolId: normalizedSchoolId,
+            role: 'TEACHER',
+            teacherId: tId,
+            assignedClassIds,
+            displayName: `${firstName.trim()} ${lastName.trim()}`,
+            approvalStatus: 'APPROVED',
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        } catch (syncErr) {
+          console.warn('User sync notice:', syncErr);
         }
       }
 
@@ -188,8 +238,8 @@ export const TeachersPage: React.FC = () => {
         editingTeacher ? 'TEACHER_UPDATED' : 'TEACHER_CREATED',
         'teachers',
         tId,
-        `${editingTeacher ? 'Updated' : 'Added'} teacher ${firstName} ${lastName}`,
-        targetSchoolId
+        `${editingTeacher ? 'Updated' : 'Added'} teacher ${firstName} ${lastName} for school ${normalizedSchoolId}`,
+        normalizedSchoolId
       );
 
       setShowModal(false);
@@ -203,6 +253,12 @@ export const TeachersPage: React.FC = () => {
   };
 
   const handleDeleteTeacher = async (teacher: Teacher) => {
+    const adminSchool = isSuperAdmin ? (schoolId || appUser?.schoolId || '') : (appUser?.schoolId || schoolId || '');
+    if (!isSuperAdmin && teacher.schoolId && teacher.schoolId !== adminSchool) {
+      alert('Unauthorized: You cannot delete teachers belonging to another school.');
+      return;
+    }
+
     if (!window.confirm(`Are you sure you want to permanently delete teacher "${teacher.firstName} ${teacher.lastName}"? This cannot be undone.`)) {
       return;
     }
@@ -221,7 +277,7 @@ export const TeachersPage: React.FC = () => {
         'teachers',
         teacher.teacherId,
         `Deleted teacher ${teacher.firstName} ${teacher.lastName}`,
-        teacher.schoolId || schoolId || 'default'
+        teacher.schoolId || adminSchool || 'default'
       );
       await fetchData();
     } catch (err) {

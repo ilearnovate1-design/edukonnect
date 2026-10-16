@@ -30,12 +30,15 @@ const SchoolContext = createContext<SchoolContextType | undefined>(undefined);
 
 export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser, appUser } = useAuth();
-  const [activeSchoolId, setActiveSchoolId] = useState<string>(appUser?.schoolId || DEFAULT_TENANT_ID);
+  const [activeSchoolId, setActiveSchoolId] = useState<string>(
+    appUser?.schoolId || (appUser?.isSuperAdmin ? DEFAULT_TENANT_ID : '')
+  );
   const [settings, setSettings] = useState<SchoolSettings>(DEFAULT_SCHOOL_SETTINGS);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
-  // Resolve schoolId: First priority is user's assigned schoolId. Second is domain hostname. Fallback is DEFAULT_TENANT_ID.
+  // Resolve schoolId: First priority is user's authoritative schoolId.
+  // Teachers and parents without a verified school membership MUST NOT silently fall back to default school.
   useEffect(() => {
     let isMounted = true;
     const determineSchoolId = async () => {
@@ -44,19 +47,34 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return;
       }
 
+      if (appUser && (appUser.role === 'TEACHER' || appUser.role === 'PARENT')) {
+        // Missing membership: do NOT silently fallback to default school
+        if (isMounted) setActiveSchoolId('');
+        return;
+      }
+
       try {
         const domainSchoolId = await resolveSchoolByDomain(window.location.hostname);
-        if (isMounted) setActiveSchoolId(domainSchoolId || DEFAULT_TENANT_ID);
+        if (isMounted) {
+          setActiveSchoolId(domainSchoolId || (appUser?.isSuperAdmin ? DEFAULT_TENANT_ID : ''));
+        }
       } catch {
-        if (isMounted) setActiveSchoolId(DEFAULT_TENANT_ID);
+        if (isMounted) {
+          setActiveSchoolId(appUser?.isSuperAdmin ? DEFAULT_TENANT_ID : '');
+        }
       }
     };
 
     determineSchoolId();
     return () => { isMounted = false; };
-  }, [appUser?.schoolId]);
+  }, [appUser?.schoolId, appUser?.role, appUser?.isSuperAdmin]);
 
   const fetchSettings = useCallback(async () => {
+    if (!activeSchoolId) {
+      setSettings({ ...DEFAULT_SCHOOL_SETTINGS, schoolId: '' });
+      setLoadingSettings(false);
+      return;
+    }
     try {
       const data = await getSchoolSettings(activeSchoolId);
       if (data) {
@@ -104,6 +122,9 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [currentUser]);
 
   const updateSettings = async (newSettings: Partial<SchoolSettings>) => {
+    if (!activeSchoolId) {
+      throw new Error('Cannot update settings: No active school context available.');
+    }
     await saveSchoolSettings(newSettings, activeSchoolId);
     await fetchSettings();
   };
@@ -127,6 +148,11 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const unreadNotificationsCount = notifications.filter(n => !n.read).length;
 
   const setSchoolId = (id: string) => {
+    // Only SUPER_ADMIN is permitted to switch active school view
+    if (!appUser?.isSuperAdmin && appUser?.role !== 'SUPER_ADMIN') {
+      console.warn('Unauthorized school switch attempt blocked: Only platform SUPER_ADMIN can switch schools.');
+      return;
+    }
     setActiveSchoolId(id);
     setLoadingSettings(true);
   };

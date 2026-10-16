@@ -24,6 +24,7 @@ import { UsageMonitoringPage } from './pages/superadmin/UsageMonitoringPage';
 import { AwaitingApprovalPage } from './pages/auth/AwaitingApprovalPage';
 import { ReportCardModal } from './components/results/ReportCardModal';
 import { Button } from './components/common/Button';
+import { AlertCircle } from 'lucide-react';
 import { Student, Result, SchoolClass } from './types';
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
 import { db, testFirestoreConnection } from './services/firebase';
@@ -159,6 +160,25 @@ export default function App() {
     return <AwaitingApprovalPage />;
   }
 
+  // Authoritative School Membership Check
+  // Teachers and Parents must belong to a verified school and not fall back to default
+  if (!isSuperAdmin && (role === 'TEACHER' || role === 'PARENT') && (!appUser?.schoolId || !appUser?.schoolId.trim())) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 text-center">
+        <div className="max-w-md bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
+          <div className="w-12 h-12 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto mb-4">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <h2 className="text-xl font-bold text-slate-900 mb-2">Account Not Assigned to a School</h2>
+          <p className="text-slate-600 text-xs sm:text-sm mb-6 leading-relaxed">
+            Your account ({appUser?.email}) has not yet been assigned to an active school by an administrator. Please contact your school administration office to complete your enrollment.
+          </p>
+          <Button variant="outline" onClick={logout}>Sign Out</Button>
+        </div>
+      </div>
+    );
+  }
+
   // Not Approved yet (and not one of the special cases above)
   if (appUser?.approvalStatus !== 'APPROVED' && !isSuperAdmin) {
     return (
@@ -201,16 +221,6 @@ export default function App() {
           <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
             <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
             <p className="text-xs text-slate-500 mt-1">Please view your children on the Home Dashboard.</p>
-            <div className="mt-4">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => switchToRole('ADMIN')}
-                className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
-              >
-                Switch to Edukonnect Admin Portal
-              </Button>
-            </div>
           </div>
         ) : (
           <StudentsPage />
@@ -223,16 +233,6 @@ export default function App() {
           <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
             <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
             <p className="text-xs text-slate-500 mt-1">Daily attendance management is restricted to staff.</p>
-            <div className="mt-4">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => switchToRole('ADMIN')}
-                className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
-              >
-                Switch to Edukonnect Admin Portal
-              </Button>
-            </div>
           </div>
         ) : (
           <AttendancePage />
@@ -253,16 +253,6 @@ export default function App() {
             <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
               <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
               <p className="text-xs text-slate-500 mt-1">Financial records and bursary tariffs are restricted to school administrators.</p>
-              <div className="mt-4">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => switchToRole('ADMIN')}
-                  className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
-                >
-                  Switch to Edukonnect Admin Portal
-                </Button>
-              </div>
             </div>
           )}
         </>
@@ -296,16 +286,6 @@ export default function App() {
           <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
             <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
             <p className="text-xs text-slate-500 mt-1">Staff employment directories are restricted to school administrators.</p>
-            <div className="mt-4">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => switchToRole('ADMIN')}
-                className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
-              >
-                Switch to Edukonnect Admin Portal
-              </Button>
-            </div>
           </div>
         )
       )}
@@ -318,16 +298,6 @@ export default function App() {
           <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
             <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
             <p className="text-xs text-slate-500 mt-1">Guardian directories are restricted to school administrators.</p>
-            <div className="mt-4">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => switchToRole('ADMIN')}
-                className="border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold"
-              >
-                Switch to Edukonnect Admin Portal
-              </Button>
-            </div>
           </div>
         )
       )}

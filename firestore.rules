@@ -40,7 +40,7 @@ service cloud.firestore {
     }
 
     function getUserSchoolId() {
-      return userExists() ? getUserData().get('schoolId', 'default') : 'default';
+      return userExists() ? getUserData().get('schoolId', '') : '';
     }
 
     function isApproved() {
@@ -88,33 +88,27 @@ service cloud.firestore {
     }
 
     // Multi-Tenant Isolation Helpers
+    // CRITICAL: Removed universal 'default' bypass. Records must strictly match the user's verified schoolId.
     function docMatchesTenant(data) {
       return isSuperAdmin() ||
-        (isApprovedOrSetup() && (
-          (!('schoolId' in data) && getUserSchoolId() == 'default') ||
-          (data.get('schoolId', 'default') == getUserSchoolId()) ||
-          (getUserSchoolId() == 'default')
+        (isApprovedOrSetup() && getUserSchoolId() != '' && (
+          data.get('schoolId', '') == getUserSchoolId()
         ));
     }
 
     function canCreateInTenant() {
       return isSuperAdmin() ||
         (
-          isApprovedOrSetup() && (
-            request.resource.data.get('schoolId', 'default') == getUserSchoolId() ||
-            getUserSchoolId() == 'default'
-          )
+          isApprovedOrSetup() && getUserSchoolId() != '' &&
+          request.resource.data.get('schoolId', '') == getUserSchoolId()
         );
     }
 
     function canUpdateInTenant() {
       return isSuperAdmin() ||
         (
-          isApprovedOrSetup() && docMatchesTenant(resource.data) && (
-            request.resource.data.get('schoolId', getUserSchoolId()) == getUserSchoolId() ||
-            request.resource.data.get('schoolId', 'default') == resource.data.get('schoolId', 'default') ||
-            getUserSchoolId() == 'default'
-          )
+          isApprovedOrSetup() && docMatchesTenant(resource.data) &&
+          request.resource.data.get('schoolId', '') == resource.data.get('schoolId', '')
         );
     }
 
@@ -146,19 +140,32 @@ service cloud.firestore {
 
     // 2. User Accounts & Identity Protection
     match /users/{userId} {
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        request.auth.uid == userId ||
+        (isAdmin() && resource.data.get('schoolId', '') == getUserSchoolId())
+      );
       allow create: if isAuthenticated() && (
         isSuperAdmin() || (
           request.auth.uid == userId &&
           request.resource.data.get('isSuperAdmin', false) == false &&
-          request.resource.data.get('role', 'PARENT') != 'SUPER_ADMIN'
+          request.resource.data.get('role', 'PARENT') in ['TEACHER', 'PARENT', 'ADMIN']
         )
       );
       allow update: if isAuthenticated() && (
         isSuperAdmin() || (
+          // School Admins can update users belonging to their own school (e.g. assignments, deactivation)
+          isAdmin() && isApproved() && resource.data.get('schoolId', '') == getUserSchoolId() &&
+          request.resource.data.get('schoolId', '') == resource.data.get('schoolId', '') &&
+          resource.data.get('role', '') != 'SUPER_ADMIN' &&
+          request.resource.data.get('role', '') != 'SUPER_ADMIN'
+        ) || (
+          // Users self-updating their own account CANNOT change role, schoolId, isSuperAdmin, or approvalStatus
           request.auth.uid == userId &&
-          (!('isSuperAdmin' in request.resource.data) || request.resource.data.isSuperAdmin == resource.data.get('isSuperAdmin', false)) &&
-          (!('role' in request.resource.data) || request.resource.data.role != 'SUPER_ADMIN' || resource.data.get('role', '') == 'SUPER_ADMIN')
+          request.resource.data.get('role', '') == resource.data.get('role', '') &&
+          request.resource.data.get('schoolId', '') == resource.data.get('schoolId', '') &&
+          request.resource.data.get('isSuperAdmin', false) == resource.data.get('isSuperAdmin', false) &&
+          request.resource.data.get('approvalStatus', '') == resource.data.get('approvalStatus', '')
         )
       );
       allow delete: if isAuthenticated() && (
@@ -167,18 +174,29 @@ service cloud.firestore {
       ) && resource.data.get('role', '') != 'SUPER_ADMIN' && resource.data.get('isSuperAdmin', false) != true;
     }
 
-    // 3. Students Directory
+    // 3. Students Directory (Parents can only view their own linked children)
     match /students/{studentId} {
-      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data) && (
+        isAdmin() || 
+        isTeacher() || 
+        (getUserRole() == 'PARENT' && (
+          (userExists() && 'parentId' in getUserData() && getUserData().parentId in resource.data.get('parentIds', [])) ||
+          (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email.lower() in resource.data.get('parentEmails', []))
+        ))
+      );
       allow list: if isAuthenticated();
       allow create: if isAdmin() && canCreateInTenant();
       allow update: if isAdmin() && canUpdateInTenant();
       allow delete: if isAdmin() && canDeleteInTenant();
     }
 
-    // 4. Parents Directory
+    // 4. Parents Directory (Parents can only view their own record)
     match /parents/{parentId} {
-      allow get: if isAuthenticated() && docMatchesTenant(resource.data);
+      allow get: if isAuthenticated() && docMatchesTenant(resource.data) && (
+        isAdmin() || 
+        isTeacher() || 
+        (getUserRole() == 'PARENT' && (resource.data.get('userId', '') == request.auth.uid || (request.auth.token != null && 'email' in request.auth.token && resource.data.get('email', '') == request.auth.token.email.lower())))
+      );
       allow list: if isAuthenticated();
       allow create: if isAdmin() && canCreateInTenant();
       allow update: if isAdmin() && canUpdateInTenant();

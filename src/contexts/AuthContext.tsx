@@ -59,197 +59,237 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const emailLower = firebaseUser.email?.toLowerCase().trim() || '';
       const isSuperAdminEmail = 
         emailLower === 'ilearnovate1@gmail.com' || 
-        emailLower === 'admin@edukonnect.ng' || 
-        emailLower.includes('admin') || 
-        emailLower.includes('ilearnovate');
+        emailLower === 'admin@edukonnect.ng';
 
-      const isEduKonnectAdmin = emailLower.includes('edukonnect') || isSuperAdminEmail;
-
-      // Check stored preference
-      let preferredPortal: UserRole | null = overrideRole || null;
-      if (!preferredPortal) {
-        try {
-          const stored = localStorage.getItem('preferred_portal_role') as UserRole;
-          if (stored) preferredPortal = stored;
-        } catch (e) {}
+      // 1. Authoritative Membership Search in Firestore
+      // Search teachers collection by email or userId
+      let teacherDoc: Teacher | null = null;
+      try {
+        const tQuery = query(collection(db, 'teachers'), where('email', '==', emailLower));
+        const tSnap = await getDocs(tQuery);
+        if (!tSnap.empty) {
+          teacherDoc = tSnap.docs[0].data() as Teacher;
+        } else {
+          const tQuery2 = query(collection(db, 'teachers'), where('userId', '==', firebaseUser.uid));
+          const tSnap2 = await getDocs(tQuery2);
+          if (!tSnap2.empty) {
+            teacherDoc = tSnap2.docs[0].data() as Teacher;
+          }
+        }
+      } catch (tErr) {
+        console.warn('Teacher lookup notice:', tErr);
       }
 
-      if (userSnap && userSnap.exists && userSnap.exists()) {
-        const uData = userSnap.data() as AppUser;
-        let needsUpdate = false;
-        const updates: any = {};
-
-        if (isSuperAdminEmail) {
-          if (uData.role !== 'SUPER_ADMIN' || !uData.isSuperAdmin || uData.approvalStatus !== 'APPROVED') {
-            uData.role = 'SUPER_ADMIN';
-            uData.isSuperAdmin = true;
-            uData.approvalStatus = 'APPROVED';
-            updates.role = 'SUPER_ADMIN';
-            updates.isSuperAdmin = true;
-            updates.approvalStatus = 'APPROVED';
-            needsUpdate = true;
-          }
-        } else if (preferredPortal === 'ADMIN' || isEduKonnectAdmin) {
-          // If the user requested Admin access or has edukonnect admin credentials, elevate from PARENT to ADMIN
-          if (uData.role !== 'ADMIN' && uData.role !== 'SUPER_ADMIN') {
-            uData.role = 'ADMIN';
-            updates.role = 'ADMIN';
-            needsUpdate = true;
-          }
-        }
-
-        // Auto-approve existing staff, admins and parents if they don't have a status
-        if (!uData.approvalStatus) {
-          uData.approvalStatus = 'APPROVED';
-          updates.approvalStatus = 'APPROVED';
-          needsUpdate = true;
-        }
-
-        // Ensure schoolId is present (defaulting to default for customer)
-        if (!uData.schoolId) {
-          uData.schoolId = 'default';
-          updates.schoolId = 'default';
-          needsUpdate = true;
-        }
-
-        if (needsUpdate) {
-          try {
-            await updateDoc(userDocRef, { ...updates, updatedAt: serverTimestamp() });
-          } catch (e) {
-            console.warn('Could not update user doc:', e);
-          }
-        }
-        setAppUser(uData);
-
-        // If Parent role, resolve linked parent record within the tenant
-        if (uData.role === 'PARENT') {
-          const pQuery = query(collection(db, 'parents'), where('email', '==', firebaseUser.email?.toLowerCase().trim()));
-          const pSnap = await getDocs(pQuery);
-          let parentDoc: Parent | null = null;
-          if (!pSnap.empty) {
-            parentDoc = pSnap.docs[0].data() as Parent;
-          } else {
-            // Also check by userId
-            const pQuery2 = query(collection(db, 'parents'), where('userId', '==', firebaseUser.uid));
-            const pSnap2 = await getDocs(pQuery2);
-            if (!pSnap2.empty) {
-              parentDoc = pSnap2.docs[0].data() as Parent;
-            }
-          }
-
-          if (parentDoc) {
-            // Sync parentId to users/{uid} for Firestore rules caching
-            if (!uData.parentId || uData.parentId !== parentDoc.parentId) {
-              try {
-                await updateDoc(userDocRef, {
-                  parentId: parentDoc.parentId,
-                  updatedAt: serverTimestamp(),
-                });
-                uData.parentId = parentDoc.parentId;
-              } catch (e) {
-                console.warn('Failed to sync parentId', e);
-              }
-            }
-            setCurrentParent(parentDoc);
-          }
-        }
-
-        // If Teacher role, resolve linked teacher record within the tenant
-        if (uData.role === 'TEACHER') {
-          const tQuery = query(collection(db, 'teachers'), where('email', '==', firebaseUser.email?.toLowerCase().trim()));
-          const tSnap = await getDocs(tQuery);
-          let teacherDoc: Teacher | null = null;
-          if (!tSnap.empty) {
-            teacherDoc = tSnap.docs[0].data() as Teacher;
-          } else {
-            const tQuery2 = query(collection(db, 'teachers'), where('userId', '==', firebaseUser.uid));
-            const tSnap2 = await getDocs(tQuery2);
-            if (!tSnap2.empty) {
-              teacherDoc = tSnap2.docs[0].data() as Teacher;
-            }
-          }
-
-          if (teacherDoc) {
-            // Sync teacherId and assignedClassIds to users/{uid} for Firestore security rules
-            const classIdsChanged = JSON.stringify(uData.assignedClassIds || []) !== JSON.stringify(teacherDoc.assignedClassIds || []);
-            if (!uData.teacherId || classIdsChanged) {
-              try {
-                await updateDoc(userDocRef, {
-                  teacherId: teacherDoc.teacherId,
-                  assignedClassIds: teacherDoc.assignedClassIds || [],
-                  updatedAt: serverTimestamp(),
-                });
-                uData.teacherId = teacherDoc.teacherId;
-                uData.assignedClassIds = teacherDoc.assignedClassIds;
-              } catch (e) {
-                console.warn('Failed to sync teacherId', e);
-              }
-            }
-            setCurrentTeacher(teacherDoc);
-          }
-        }
-      } else {
-        // First user or designated admin check
-        const emailLower = firebaseUser.email?.toLowerCase().trim() || '';
-        const isSuperAdminEmail = 
-          emailLower === 'ilearnovate1@gmail.com' || 
-          emailLower === 'admin@edukonnect.ng' || 
-          emailLower.includes('admin') || 
-          emailLower.includes('ilearnovate');
-        const isEduKonnectAdmin = emailLower.includes('edukonnect') || isSuperAdminEmail;
-
-        let role: UserRole = 'ADMIN';
-        if (isSuperAdminEmail) {
-          role = 'SUPER_ADMIN';
-        } else if (overrideRole) {
-          role = overrideRole;
-        } else if (preferredPortal) {
-          role = preferredPortal;
-        } else if (isEduKonnectAdmin) {
-          role = 'ADMIN';
+      // Search parents collection by email or userId
+      let parentDoc: Parent | null = null;
+      try {
+        const pQuery = query(collection(db, 'parents'), where('email', '==', emailLower));
+        const pSnap = await getDocs(pQuery);
+        if (!pSnap.empty) {
+          parentDoc = pSnap.docs[0].data() as Parent;
         } else {
-          // Default to ADMIN for school administration portal
-          role = 'ADMIN';
+          const pQuery2 = query(collection(db, 'parents'), where('userId', '==', firebaseUser.uid));
+          const pSnap2 = await getDocs(pQuery2);
+          if (!pSnap2.empty) {
+            parentDoc = pSnap2.docs[0].data() as Parent;
+          }
+        }
+      } catch (pErr) {
+        console.warn('Parent lookup notice:', pErr);
+      }
+
+      // 2. Authoritative Teacher Resolution
+      if (teacherDoc) {
+        const targetSchoolId = teacherDoc.schoolId?.trim().toLowerCase() || '';
+        const userDisplayName = teacherDoc.firstName && teacherDoc.lastName 
+          ? `${teacherDoc.firstName} ${teacherDoc.lastName}`
+          : firebaseUser.displayName || 'Teacher';
+
+        // Link userId on teacher record if missing
+        if (!teacherDoc.userId || teacherDoc.userId !== firebaseUser.uid) {
+          try {
+            await updateDoc(doc(db, 'teachers', teacherDoc.teacherId), {
+              userId: firebaseUser.uid,
+              updatedAt: serverTimestamp()
+            });
+            teacherDoc.userId = firebaseUser.uid;
+          } catch (linkErr) {
+            console.warn('Could not link teacher userId:', linkErr);
+          }
         }
 
-        const approvalStatus: UserApprovalStatus = 'APPROVED';
-        const newAppUser: AppUser = {
+        const teacherUser: AppUser = {
           uid: firebaseUser.uid,
-          email: firebaseUser.email || '',
-          role,
-          isSuperAdmin: isSuperAdminEmail,
-          approvalStatus,
-          schoolId: 'default',
-          displayName: firebaseUser.displayName || (role === 'ADMIN' || role === 'SUPER_ADMIN' ? 'School Administrator' : 'User'),
-          active: true,
-          createdAt: serverTimestamp(),
+          email: emailLower,
+          displayName: userDisplayName,
+          role: 'TEACHER',
+          isSuperAdmin: false,
+          schoolId: targetSchoolId,
+          teacherId: teacherDoc.teacherId,
+          assignedClassIds: teacherDoc.assignedClassIds || [],
+          approvalStatus: targetSchoolId ? 'APPROVED' : 'PENDING_APPROVAL',
+          active: teacherDoc.status !== 'INACTIVE',
+          createdAt: userSnap?.exists?.() ? userSnap.data()?.createdAt || serverTimestamp() : serverTimestamp(),
           updatedAt: serverTimestamp(),
         };
+
         try {
-          await setDoc(userDocRef, newAppUser);
-        } catch (e) {
-          console.warn('Could not persist initial user doc:', e);
+          await setDoc(userDocRef, teacherUser, { merge: true });
+        } catch (syncErr) {
+          console.warn('User doc sync notice for teacher:', syncErr);
         }
-        setAppUser(newAppUser);
+
+        setCurrentTeacher(teacherDoc);
+        setCurrentParent(null);
+        setAppUser(teacherUser);
+        return;
       }
+
+      // 3. Authoritative Parent Resolution
+      if (parentDoc) {
+        const targetSchoolId = parentDoc.schoolId?.trim().toLowerCase() || '';
+        const userDisplayName = parentDoc.firstName && parentDoc.lastName
+          ? `${parentDoc.firstName} ${parentDoc.lastName}`
+          : firebaseUser.displayName || 'Parent';
+
+        // Link userId on parent record if missing
+        if (!parentDoc.userId || parentDoc.userId !== firebaseUser.uid) {
+          try {
+            await updateDoc(doc(db, 'parents', parentDoc.parentId), {
+              userId: firebaseUser.uid,
+              updatedAt: serverTimestamp()
+            });
+            parentDoc.userId = firebaseUser.uid;
+          } catch (linkErr) {
+            console.warn('Could not link parent userId:', linkErr);
+          }
+        }
+
+        const parentUser: AppUser = {
+          uid: firebaseUser.uid,
+          email: emailLower,
+          displayName: userDisplayName,
+          role: 'PARENT',
+          isSuperAdmin: false,
+          schoolId: targetSchoolId,
+          parentId: parentDoc.parentId,
+          approvalStatus: targetSchoolId ? 'APPROVED' : 'PENDING_APPROVAL',
+          active: true,
+          createdAt: userSnap?.exists?.() ? userSnap.data()?.createdAt || serverTimestamp() : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
+        try {
+          await setDoc(userDocRef, parentUser, { merge: true });
+        } catch (syncErr) {
+          console.warn('User doc sync notice for parent:', syncErr);
+        }
+
+        setCurrentParent(parentDoc);
+        setCurrentTeacher(null);
+        setAppUser(parentUser);
+        return;
+      }
+
+      // 4. Platform Super Admin Resolution
+      if (isSuperAdminEmail) {
+        const superAdminUser: AppUser = {
+          uid: firebaseUser.uid,
+          email: emailLower,
+          displayName: firebaseUser.displayName || 'Platform Super Administrator',
+          role: 'SUPER_ADMIN',
+          isSuperAdmin: true,
+          schoolId: 'default',
+          approvalStatus: 'APPROVED',
+          active: true,
+          createdAt: userSnap?.exists?.() ? userSnap.data()?.createdAt || serverTimestamp() : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
+        try {
+          await setDoc(userDocRef, superAdminUser, { merge: true });
+        } catch (syncErr) {
+          console.warn('Superadmin user sync notice:', syncErr);
+        }
+
+        setCurrentTeacher(null);
+        setCurrentParent(null);
+        setAppUser(superAdminUser);
+        return;
+      }
+
+      // 5. Existing User Document Processing (School Admin / Staff)
+      if (userSnap && userSnap.exists && userSnap.exists()) {
+        const uData = userSnap.data() as AppUser;
+        
+        // Prevent unauthorized client elevation to SUPER_ADMIN
+        if (uData.role === 'SUPER_ADMIN' && !isSuperAdminEmail && !uData.isSuperAdmin) {
+          uData.role = 'ADMIN';
+        }
+
+        // Validate School Admin school membership
+        if (uData.role === 'ADMIN') {
+          if (!uData.schoolId || uData.schoolId === 'default') {
+            // Check if this admin has configured a school
+            uData.approvalStatus = uData.approvalStatus || 'PENDING_SETUP';
+          }
+        }
+
+        // If user document previously had role TEACHER or PARENT but no matching record exists in teachers/parents
+        if (uData.role === 'TEACHER' || uData.role === 'PARENT') {
+          if (!uData.schoolId || uData.schoolId === 'default') {
+            // Unverified membership: do not assign default school
+            uData.schoolId = '';
+            uData.approvalStatus = 'PENDING_APPROVAL';
+          }
+        }
+
+        setAppUser(uData);
+        setCurrentTeacher(null);
+        setCurrentParent(null);
+        return;
+      }
+
+      // 6. First-time registration or login for School Administrator
+      const initialApproval: UserApprovalStatus = 'PENDING_SETUP';
+      const newAdminUser: AppUser = {
+        uid: firebaseUser.uid,
+        email: emailLower,
+        role: 'ADMIN',
+        isSuperAdmin: false,
+        approvalStatus: initialApproval,
+        schoolId: '', // Explicitly empty; must be configured in InitialSetupPage
+        displayName: firebaseUser.displayName || 'School Administrator',
+        active: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      try {
+        await setDoc(userDocRef, newAdminUser);
+      } catch (e) {
+        console.warn('Could not persist initial admin user doc:', e);
+      }
+
+      setCurrentTeacher(null);
+      setCurrentParent(null);
+      setAppUser(newAdminUser);
+
     } catch (err: any) {
       console.warn('Notice fetching user profile from Firestore:', err?.message || err);
-      // Provide resilient fallback profile so offline/cached sessions continue operating seamlessly
       const emailLower = firebaseUser.email?.toLowerCase().trim() || '';
       const isSuperAdminEmail = 
         emailLower === 'ilearnovate1@gmail.com' || 
-        emailLower === 'admin@edukonnect.ng' || 
-        emailLower.includes('admin') || 
-        emailLower.includes('ilearnovate');
-      let fallbackRole: UserRole = overrideRole || (localStorage.getItem('preferred_portal_role') as UserRole) || (isSuperAdminEmail ? 'SUPER_ADMIN' : 'ADMIN');
+        emailLower === 'admin@edukonnect.ng';
+
       setAppUser((prev) => prev || {
         uid: firebaseUser.uid,
-        email: firebaseUser.email || '',
-        displayName: firebaseUser.displayName || 'School Administrator',
-        role: fallbackRole,
+        email: emailLower,
+        displayName: firebaseUser.displayName || 'EduKonnect User',
+        role: isSuperAdminEmail ? 'SUPER_ADMIN' : 'ADMIN',
         isSuperAdmin: isSuperAdminEmail,
-        approvalStatus: 'APPROVED',
-        schoolId: 'default',
+        approvalStatus: isSuperAdminEmail ? 'APPROVED' : 'PENDING_SETUP',
+        schoolId: isSuperAdminEmail ? 'default' : '',
         active: true,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -257,68 +297,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const switchToRole = async (newRole: UserRole, targetSchoolId: string = 'default') => {
-    if (!currentUser) return;
-    const targetSchool = targetSchoolId || 'default';
-    const userDocRef = doc(db, 'users', currentUser.uid);
+  /**
+   * Privilege escalation prevention:
+   * Only authenticated SUPER_ADMIN can switch views/roles for simulation.
+   * Ordinary teachers, parents, and admins CANNOT modify their role or school membership.
+   */
+  const switchToRole = async (newRole: UserRole, targetSchoolId?: string) => {
+    if (!currentUser || !appUser) return;
 
-    try {
-      localStorage.setItem('preferred_portal_role', newRole);
-      localStorage.setItem('preferred_school_id', targetSchool);
-    } catch (e) {}
-
-    const updates: Partial<AppUser> = {
-      role: newRole,
-      schoolId: targetSchool,
-      approvalStatus: 'APPROVED',
-    };
-
-    try {
-      await updateDoc(userDocRef, {
-        ...updates,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      try {
-        await setDoc(userDocRef, {
-          uid: currentUser.uid,
-          email: currentUser.email || '',
-          displayName: currentUser.displayName || (newRole === 'ADMIN' ? 'School Administrator' : 'User'),
-          ...updates,
-          active: true,
-          updatedAt: serverTimestamp(),
-        }, { merge: true });
-      } catch (setErr) {
-        console.warn('SetDoc fallback notice:', setErr);
-      }
+    if (!appUser.isSuperAdmin && appUser.role !== 'SUPER_ADMIN') {
+      console.warn('Unauthorized role change attempt blocked. Users cannot alter their role or school membership.');
+      return;
     }
 
+    // SUPER_ADMIN preview role in memory only - do not overwrite database account
     setAppUser((prev) => {
-      if (!prev) {
-        return {
-          uid: currentUser.uid,
-          email: currentUser.email || '',
-          displayName: currentUser.displayName || (newRole === 'ADMIN' ? 'School Administrator' : 'User'),
-          role: newRole,
-          isSuperAdmin: newRole === 'SUPER_ADMIN',
-          approvalStatus: 'APPROVED',
-          schoolId: targetSchool,
-          active: true,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-      }
+      if (!prev) return null;
       return {
         ...prev,
         role: newRole,
-        schoolId: targetSchool,
-        approvalStatus: 'APPROVED',
+        schoolId: targetSchoolId || prev.schoolId || 'default'
       };
     });
-
-    if (newRole !== 'PARENT') {
-      setCurrentParent(null);
-    }
   };
 
   useEffect(() => {
@@ -365,24 +365,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     pass: string, 
     name: string, 
     role: UserRole = 'ADMIN',
-    schoolId: string = 'default'
+    schoolId: string = ''
   ) => {
     const res = await createUserWithEmailAndPassword(auth, email.trim(), pass);
-    const userDocRef = doc(db, 'users', res.user.uid);
-    const approvalStatus: UserApprovalStatus = role === 'ADMIN' ? 'PENDING_SETUP' : 'APPROVED';
-    const newUser: AppUser = {
-      uid: res.user.uid,
-      email: email.trim(),
-      role: role,
-      approvalStatus,
-      schoolId: schoolId || 'default',
-      displayName: name.trim() || 'User',
-      active: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    await setDoc(userDocRef, newUser);
-    setAppUser(newUser);
+    // Leverage authoritative membership resolution
+    await fetchProfile(res.user);
   };
 
   const logout = async () => {

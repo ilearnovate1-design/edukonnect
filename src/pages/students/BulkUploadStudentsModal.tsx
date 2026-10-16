@@ -8,6 +8,7 @@ import { Button } from '../../components/common/Button';
 import { Student, SchoolClass, Parent } from '../../types';
 import { logAudit } from '../../utils/formatters';
 import { useAuth } from '../../contexts/AuthContext';
+import { useSchool } from '../../contexts/SchoolContext';
 import { 
   Upload, FileText, Download, Copy, Check, AlertCircle, AlertTriangle, 
   Trash2, ArrowLeft, CheckCircle2, Users, RefreshCw
@@ -54,7 +55,8 @@ export const BulkUploadStudentsModal: React.FC<BulkUploadStudentsModalProps> = (
   existingStudents,
   onSuccess,
 }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, appUser, isSuperAdmin } = useAuth();
+  const { schoolId } = useSchool();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [step, setStep] = useState<'input' | 'preview' | 'importing' | 'complete'>('input');
@@ -412,6 +414,13 @@ export const BulkUploadStudentsModal: React.FC<BulkUploadStudentsModalProps> = (
         if (p.phone) parentsPhoneMap.set(p.phone.replace(/\D/g, ''), p);
       });
 
+      // Derive verified active schoolId
+      const targetSchoolId = isSuperAdmin ? (schoolId || appUser?.schoolId || '') : (appUser?.schoolId || schoolId || '');
+      if (!targetSchoolId || !targetSchoolId.trim()) {
+        throw new Error('Cannot upload students: No verified school membership context available.');
+      }
+      const normalizedSchoolId = targetSchoolId.trim().toLowerCase();
+
       // Prepare writes in batches (Firestore supports up to 500 per batch)
       const BATCH_SIZE = 300;
       let studentsCreatedCount = 0;
@@ -446,6 +455,7 @@ export const BulkUploadStudentsModal: React.FC<BulkUploadStudentsModalProps> = (
 
               const parentPayload: any = {
                 parentId: newParentId,
+                schoolId: normalizedSchoolId,
                 firstName: pFirst,
                 lastName: pLast,
                 phone: row.parentPhone,
@@ -470,6 +480,7 @@ export const BulkUploadStudentsModal: React.FC<BulkUploadStudentsModalProps> = (
 
           const studentPayload: any = {
             studentId: studentDocId,
+            schoolId: normalizedSchoolId,
             admissionNumber: row.admissionNumber,
             firstName: row.firstName,
             middleName: row.middleName || undefined,

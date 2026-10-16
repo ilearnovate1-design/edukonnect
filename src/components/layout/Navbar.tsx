@@ -127,22 +127,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </div>
 
-          {/* Quick Admin Portal Access button for parents/guardians */}
-          {appUser?.role === 'PARENT' && (
-            <button
-              type="button"
-              id="nav-quick-admin-btn"
-              onClick={async () => {
-                await switchToRole('ADMIN', 'default');
-                onNavigate('dashboard');
-              }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-all shadow-2xs cursor-pointer"
-              title="Access EduKonnect Administrator Portal"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" />
-              <span>Admin Portal</span>
-            </button>
-          )}
+
 
           {/* User Menu */}
           <div className="relative">
@@ -191,33 +176,34 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </div>
                 </div>
 
-                {appUser?.role === 'PARENT' ? (
-                  <button
-                    type="button"
-                    id="dropdown-switch-admin-btn"
-                    onClick={async () => {
-                      setShowUserMenu(false);
-                      await switchToRole('ADMIN', 'default');
-                      onNavigate('dashboard');
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-left font-bold my-1 border border-emerald-200 cursor-pointer"
-                  >
-                    <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0" />
-                    Switch to Admin Portal
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setShowUserMenu(false);
-                      await switchToRole('PARENT', 'default');
-                      onNavigate('dashboard');
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 rounded-lg text-left my-1 cursor-pointer"
-                  >
-                    <User className="w-4 h-4 text-slate-400 shrink-0" />
-                    Preview Parent View
-                  </button>
+                {appUser?.isSuperAdmin && (
+                  <div className="py-1 border-t border-b border-slate-100 my-1">
+                    <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 px-3 py-1">SuperAdmin Preview</p>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setShowUserMenu(false);
+                        await switchToRole('ADMIN', appUser.schoolId);
+                        onNavigate('dashboard');
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 rounded-lg text-left cursor-pointer"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      Admin View
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setShowUserMenu(false);
+                        await switchToRole('PARENT', appUser.schoolId);
+                        onNavigate('dashboard');
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 rounded-lg text-left cursor-pointer"
+                    >
+                      <User className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                      Parent View
+                    </button>
+                  </div>
                 )}
 
                 {appUser?.role === 'ADMIN' && (
