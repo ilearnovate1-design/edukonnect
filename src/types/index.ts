@@ -2,6 +2,55 @@ export type UserRole = 'ADMIN' | 'TEACHER' | 'PARENT' | 'SUPER_ADMIN';
 
 export type UserApprovalStatus = 'PENDING_SETUP' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
 
+export interface SchoolMembership {
+  id: string; // e.g. `${schoolId}_${userId}`
+  userId: string;
+  userEmail: string;
+  schoolId: string;
+  schoolName?: string;
+  role: 'ADMIN' | 'TEACHER' | 'PARENT';
+  status: 'ACTIVE' | 'INVITED' | 'SUSPENDED' | 'REVOKED';
+  teacherId?: string;
+  parentId?: string;
+  linkedStudentIds?: string[];
+  invitedBy?: string;
+  invitedAt?: any;
+  activatedAt?: any;
+  createdAt: any;
+  updatedAt: any;
+}
+
+export interface AccountInvitation {
+  id: string; // unique invite code / token
+  schoolId: string;
+  schoolName: string;
+  email: string;
+  role: 'TEACHER' | 'PARENT';
+  status: 'PENDING' | 'ACCEPTED' | 'EXPIRED' | 'REVOKED';
+  teacherData?: {
+    firstName: string;
+    lastName: string;
+    phone?: string;
+    employeeId?: string;
+    assignedClassIds: string[];
+    subjects: string[];
+  };
+  parentData?: {
+    firstName: string;
+    lastName: string;
+    phone?: string;
+    relationship?: string;
+    linkedStudentIds: string[];
+  };
+  invitedBy: string; // admin user ID
+  invitedByName?: string;
+  expiresAt: any;
+  acceptedAt?: any;
+  acceptedBy?: string;
+  createdAt: any;
+  updatedAt: any;
+}
+
 export interface AppUser {
   uid: string;
   email: string;
@@ -14,6 +63,7 @@ export interface AppUser {
   parentId?: string;
   teacherId?: string;
   assignedClassIds?: string[];
+  memberships?: SchoolMembership[];
   createdAt: any;
   updatedAt: any;
 }

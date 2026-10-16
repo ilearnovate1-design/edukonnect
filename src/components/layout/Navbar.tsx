@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { 
-  Menu, X, Bell, LogOut, User, GraduationCap, ChevronDown, ShieldCheck 
+  Menu, X, Bell, LogOut, User, GraduationCap, ChevronDown, ShieldCheck,
+  Building2, Check, ArrowRight
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { Badge } from '../common/Badge';
+import { Modal } from '../common/Modal';
 
 interface NavbarProps {
   onToggleSidebar: () => void;
@@ -19,16 +21,40 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentPageTitle,
   onNavigate,
 }) => {
-  const { appUser, logout, switchToRole } = useAuth();
-  const { settings, notifications, unreadNotificationsCount, markNotificationsAsRead } = useSchool();
+  const { 
+    appUser, 
+    logout, 
+    switchToRole, 
+    userMemberships, 
+    hasMultipleMemberships, 
+    switchSchoolMembership,
+    activeMembership 
+  } = useAuth();
+  const { settings, notifications, unreadNotificationsCount, markNotificationsAsRead, reloadSettings } = useSchool();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showSchoolModal, setShowSchoolModal] = useState(false);
+  const [isSwitchingSchool, setIsSwitchingSchool] = useState(false);
 
   const handleToggleNotifications = async () => {
     const willShow = !showNotifications;
     setShowNotifications(willShow);
     if (willShow && unreadNotificationsCount > 0) {
       await markNotificationsAsRead();
+    }
+  };
+
+  const handleSelectSchool = async (targetSchoolId: string) => {
+    setIsSwitchingSchool(true);
+    try {
+      await switchSchoolMembership(targetSchoolId);
+      await reloadSettings();
+      setShowSchoolModal(false);
+      onNavigate('dashboard');
+    } catch (e) {
+      console.error('Error switching school:', e);
+    } finally {
+      setIsSwitchingSchool(false);
     }
   };
 

@@ -3,25 +3,31 @@ import {
   collection, getDocs, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where 
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
-import { Teacher, SchoolClass, Subject } from '../../types';
+import { Teacher, SchoolClass, Subject, AccountInvitation } from '../../types';
 import { Button } from '../../components/common/Button';
 import { Input, Select } from '../../components/common/Input';
 import { Card } from '../../components/common/Card';
 import { Modal } from '../../components/common/Modal';
-import { Plus, Search, Edit2, Trash2, Phone, Mail, BookOpen, Layers, Briefcase } from 'lucide-react';
+import { 
+  Plus, Search, Edit2, Trash2, Phone, Mail, BookOpen, Layers, Briefcase,
+  Send, KeyRound, Copy, Check, Clock, UserCheck, UserX, ShieldCheck
+} from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
+import { createTeacherInvitation, getSchoolInvitations, revokeInvitation } from '../../services/invitationService';
 
 export const TeachersPage: React.FC = () => {
   const { role, currentUser, appUser, isSuperAdmin } = useAuth();
-  const { schoolId } = useSchool();
+  const { schoolId, settings } = useSchool();
   const [teachers, setTeachers] = useState<Teacher[]>([]);
+  const [invitations, setInvitations] = useState<AccountInvitation[]>([]);
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [activeTab, setActiveTab] = useState<'teachers' | 'invitations'>('teachers');
 
   // Add/Edit Modal
   const [showModal, setShowModal] = useState(false);
@@ -37,6 +43,20 @@ export const TeachersPage: React.FC = () => {
   const [tempPassword, setTempPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
+
+  // Invitation Modal State
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteFirstName, setInviteFirstName] = useState('');
+  const [inviteLastName, setInviteLastName] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [invitePhone, setInvitePhone] = useState('');
+  const [inviteEmployeeId, setInviteEmployeeId] = useState('');
+  const [inviteClasses, setInviteClasses] = useState<string[]>([]);
+  const [inviteSubjects, setInviteSubjects] = useState<string[]>([]);
+  const [inviteSaving, setInviteSaving] = useState(false);
+  const [inviteError, setInviteError] = useState('');
+  const [createdInvite, setCreatedInvite] = useState<AccountInvitation | null>(null);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   const matchesTenant = (itemSchoolId?: string) => {
     return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
@@ -83,6 +103,15 @@ export const TeachersPage: React.FC = () => {
         }
       });
       setSubjects(subList);
+
+      if (schoolId) {
+        try {
+          const invList = await getSchoolInvitations(schoolId);
+          setInvitations(invList);
+        } catch (invErr) {
+          console.warn('Invitations load notice:', invErr);
+        }
+      }
     } catch (err) {
       console.error('Error fetching teachers:', err);
     } finally {
@@ -92,7 +121,105 @@ export const TeachersPage: React.FC = () => {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [schoolId]);
+
+  const handleToggleTeacherStatus = async (teacher: Teacher) => {
+    const adminSchool = isSuperAdmin ? (schoolId || appUser?.schoolId || '') : (appUser?.schoolId || schoolId || '');
+    if (!isSuperAdmin && teacher.schoolId && teacher.schoolId !== adminSchool) {
+      alert('Unauthorized: You cannot modify teachers belonging to another school.');
+      return;
+    }
+
+    const nextStatus = teacher.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    try {
+      await updateDoc(doc(db, 'teachers', teacher.teacherId), {
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
+      if (teacher.userId) {
+        try {
+          await updateDoc(doc(db, 'users', teacher.userId), {
+            active: nextStatus === 'ACTIVE',
+            updatedAt: serverTimestamp(),
+          });
+        } catch (uErr) {}
+      }
+      await logAudit(
+        currentUser?.uid || 'admin',
+        'TEACHER_STATUS_CHANGED',
+        'teachers',
+        teacher.teacherId,
+        `Changed teacher ${teacher.firstName} ${teacher.lastName} status to ${nextStatus}`,
+        teacher.schoolId || adminSchool || 'default'
+      );
+      await fetchData();
+    } catch (err: any) {
+      console.error('Failed to change teacher status:', err);
+      alert('Failed to update status');
+    }
+  };
+
+  const openInviteModal = () => {
+    setInviteFirstName('');
+    setInviteLastName('');
+    setInviteEmail('');
+    setInvitePhone('');
+    setInviteEmployeeId(`EMP-00${teachers.length + 1}`);
+    setInviteClasses([]);
+    setInviteSubjects([]);
+    setCreatedInvite(null);
+    setInviteError('');
+    setCopiedCode(false);
+    setShowInviteModal(true);
+  };
+
+  const handleSendInvitation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteFirstName.trim() || !inviteLastName.trim() || !inviteEmail.trim()) {
+      setInviteError('Please fill in teacher name and email.');
+      return;
+    }
+
+    if (!appUser) return;
+    setInviteSaving(true);
+    setInviteError('');
+    try {
+      const inv = await createTeacherInvitation({
+        schoolId: schoolId || appUser.schoolId || '',
+        schoolName: settings.schoolName || 'EduKonnect School',
+        adminUser: appUser,
+        email: inviteEmail.trim(),
+        teacherData: {
+          firstName: inviteFirstName.trim(),
+          lastName: inviteLastName.trim(),
+          phone: invitePhone.trim(),
+          employeeId: inviteEmployeeId.trim(),
+          assignedClassIds: inviteClasses,
+          subjects: inviteSubjects,
+        },
+      });
+
+      setCreatedInvite(inv);
+      await fetchData();
+    } catch (err: any) {
+      console.error('Invite error:', err);
+      setInviteError(err.message || 'Failed to generate invitation.');
+    } finally {
+      setInviteSaving(false);
+    }
+  };
+
+  const handleRevokeInvitation = async (invId: string) => {
+    if (!window.confirm('Are you sure you want to revoke this invitation? The recipient will not be able to activate it.')) {
+      return;
+    }
+    try {
+      await revokeInvitation(invId, schoolId || appUser?.schoolId || '');
+      await fetchData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to revoke invitation.');
+    }
+  };
 
   const openAddModal = () => {
     setEditingTeacher(null);
@@ -298,137 +425,278 @@ export const TeachersPage: React.FC = () => {
   return (
     <div className="space-y-5">
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Teaching Staff Directory</h2>
           <p className="text-xs sm:text-sm text-slate-500">
-            {teachers.length} teachers and class instructors
+            {teachers.length} verified teacher(s) • Secure invitation and assignment management
           </p>
         </div>
 
         {role === 'ADMIN' && (
-          <Button
-            variant="primary"
-            onClick={openAddModal}
-            leftIcon={<Plus className="w-4 h-4" />}
-          >
-            Add New Teacher
-          </Button>
-        )}
-      </div>
-
-      {/* Search */}
-      <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs">
-        <div className="relative max-w-md">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by teacher name, phone, or email..."
-            className="w-full pl-9 pr-3 py-2 bg-slate-50 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:bg-white"
-          />
-        </div>
-      </div>
-
-      {/* Teachers Grid/List */}
-      <Card>
-        {loading ? (
-          <div className="py-12 text-center text-xs text-slate-500">Loading teaching staff...</div>
-        ) : filteredTeachers.length === 0 ? (
-          <div className="py-12 text-center text-xs text-slate-500">No teachers found.</div>
-        ) : (
-          <div className="divide-y divide-slate-100">
-            {filteredTeachers.map((teacher) => (
-              <div key={teacher.teacherId} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50">
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-slate-900 text-sm sm:text-base">
-                      {teacher.firstName} {teacher.lastName}
-                    </span>
-                    {teacher.employeeId && (
-                      <span className="text-[11px] font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
-                        {teacher.employeeId}
-                      </span>
-                    )}
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                      teacher.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
-                    }`}>
-                      {teacher.status}
-                    </span>
-                  </div>
-
-                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
-                    <span className="flex items-center gap-1">
-                      <Phone className="w-3.5 h-3.5 text-slate-400" />
-                      {teacher.phone}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Mail className="w-3.5 h-3.5 text-slate-400" />
-                      {teacher.email}
-                    </span>
-                    {!teacher.userId && teacher.tempPassword && (
-                      <span className="flex items-center gap-1 bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-medium">
-                        Default Pass: <span className="font-mono">{teacher.tempPassword}</span>
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Assigned classes & subjects */}
-                  <div className="pt-1 flex flex-wrap gap-2 text-xs">
-                    <div className="flex items-center gap-1">
-                      <span className="text-slate-400 font-medium text-[11px]">Classes:</span>
-                      {teacher.assignedClassIds?.length > 0 ? (
-                        teacher.assignedClassIds.map((cid) => (
-                          <span key={cid} className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 font-medium text-[11px]">
-                            {classesMap.get(cid)?.name || cid}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-slate-400 italic text-[11px]">None assigned</span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-1 ml-2">
-                      <span className="text-slate-400 font-medium text-[11px]">Subjects:</span>
-                      {teacher.subjects?.length > 0 ? (
-                        teacher.subjects.map((s) => (
-                          <span key={s} className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[11px]">
-                            {s}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-slate-400 italic text-[11px]">General</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {role === 'ADMIN' && (
-                  <div className="shrink-0 flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => openEditModal(teacher)}
-                      leftIcon={<Edit2 className="w-3.5 h-3.5" />}
-                    >
-                      Edit & Assign
-                    </Button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteTeacher(teacher)}
-                      title="Delete Teacher"
-                      className="p-2 border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="primary"
+              onClick={openInviteModal}
+              leftIcon={<Send className="w-4 h-4" />}
+            >
+              Invite Teacher
+            </Button>
+            <Button
+              variant="outline"
+              onClick={openAddModal}
+              leftIcon={<Plus className="w-4 h-4" />}
+            >
+              Add Direct
+            </Button>
           </div>
         )}
-      </Card>
+      </div>
+
+      {/* Tab Switcher: Teachers vs Invitations */}
+      <div className="flex items-center gap-2 border-b border-slate-200">
+        <button
+          type="button"
+          onClick={() => setActiveTab('teachers')}
+          className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+            activeTab === 'teachers'
+              ? 'border-emerald-600 text-emerald-800'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <BookOpen className="w-3.5 h-3.5" />
+          Active Teachers ({teachers.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('invitations')}
+          className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+            activeTab === 'invitations'
+              ? 'border-emerald-600 text-emerald-800'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Clock className="w-3.5 h-3.5" />
+          Account Invitations ({invitations.length})
+        </button>
+      </div>
+
+      {activeTab === 'teachers' ? (
+        <>
+          {/* Search */}
+          <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs">
+            <div className="relative max-w-md">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search by teacher name, phone, or email..."
+                className="w-full pl-9 pr-3 py-2 bg-slate-50 text-xs sm:text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:bg-white"
+              />
+            </div>
+          </div>
+
+          {/* Teachers Grid/List */}
+          <Card>
+            {loading ? (
+              <div className="py-12 text-center text-xs text-slate-500">Loading teaching staff...</div>
+            ) : filteredTeachers.length === 0 ? (
+              <div className="py-12 text-center text-xs text-slate-500">No teachers found. Click "Invite Teacher" to onboard instructors.</div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {filteredTeachers.map((teacher) => (
+                  <div key={teacher.teacherId} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-900 text-sm sm:text-base">
+                          {teacher.firstName} {teacher.lastName}
+                        </span>
+                        {teacher.employeeId && (
+                          <span className="text-[11px] font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
+                            {teacher.employeeId}
+                          </span>
+                        )}
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                          teacher.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+                        }`}>
+                          {teacher.status}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+                        <span className="flex items-center gap-1">
+                          <Phone className="w-3.5 h-3.5 text-slate-400" />
+                          {teacher.phone}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <Mail className="w-3.5 h-3.5 text-slate-400" />
+                          {teacher.email}
+                        </span>
+                        {!teacher.userId && teacher.tempPassword && (
+                          <span className="flex items-center gap-1 bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-medium">
+                            Default Pass: <span className="font-mono">{teacher.tempPassword}</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Assigned classes & subjects */}
+                      <div className="pt-1 flex flex-wrap gap-2 text-xs">
+                        <div className="flex items-center gap-1">
+                          <span className="text-slate-400 font-medium text-[11px]">Classes:</span>
+                          {teacher.assignedClassIds?.length > 0 ? (
+                            teacher.assignedClassIds.map((cid) => (
+                              <span key={cid} className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 font-medium text-[11px]">
+                                {classesMap.get(cid)?.name || cid}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-slate-400 italic text-[11px]">None assigned</span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1 ml-2">
+                          <span className="text-slate-400 font-medium text-[11px]">Subjects:</span>
+                          {teacher.subjects?.length > 0 ? (
+                            teacher.subjects.map((s) => (
+                              <span key={s} className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[11px]">
+                                {s}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-slate-400 italic text-[11px]">General</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {role === 'ADMIN' && (
+                      <div className="shrink-0 flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleToggleTeacherStatus(teacher)}
+                          title={teacher.status === 'ACTIVE' ? 'Deactivate Teacher Access' : 'Activate Teacher Access'}
+                          leftIcon={teacher.status === 'ACTIVE' ? <UserX className="w-3.5 h-3.5 text-amber-600" /> : <UserCheck className="w-3.5 h-3.5 text-emerald-600" />}
+                        >
+                          {teacher.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openEditModal(teacher)}
+                          leftIcon={<Edit2 className="w-3.5 h-3.5" />}
+                        >
+                          Edit
+                        </Button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTeacher(teacher)}
+                          title="Delete Teacher"
+                          className="p-2 border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </>
+      ) : (
+        /* Invitations Tab View */
+        <Card>
+          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Expiring Single-Use Invitations</h3>
+              <p className="text-xs text-slate-500">
+                Track pending, activated, and revoked teacher invitations
+              </p>
+            </div>
+            {role === 'ADMIN' && (
+              <Button size="sm" variant="primary" onClick={openInviteModal} leftIcon={<Send className="w-3.5 h-3.5" />}>
+                New Invitation
+              </Button>
+            )}
+          </div>
+          {invitations.length === 0 ? (
+            <div className="py-12 text-center text-xs text-slate-500">No invitations created yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs sm:text-sm">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase text-xs">
+                  <tr>
+                    <th className="px-5 py-3">Invite Code</th>
+                    <th className="px-5 py-3">Recipient</th>
+                    <th className="px-5 py-3">Status</th>
+                    <th className="px-5 py-3">Classes</th>
+                    <th className="px-5 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {invitations.map((inv) => (
+                    <tr key={inv.id} className="hover:bg-slate-50/50">
+                      <td className="px-5 py-3">
+                        <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
+                          {inv.id}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3">
+                        <div className="font-semibold text-slate-900">
+                          {inv.teacherData?.firstName} {inv.teacherData?.lastName}
+                        </div>
+                        <div className="text-[11px] text-slate-500">{inv.email}</div>
+                      </td>
+                      <td className="px-5 py-3">
+                        <span
+                          className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                            inv.status === 'ACCEPTED'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : inv.status === 'REVOKED'
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {inv.status}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-xs text-slate-600">
+                        {inv.teacherData?.assignedClassIds?.length || 0} class(es)
+                      </td>
+                      <td className="px-5 py-3 flex items-center gap-2">
+                        {inv.status === 'PENDING' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(inv.id);
+                                alert(`Invitation code ${inv.id} copied to clipboard!`);
+                              }}
+                              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded flex items-center gap-1 cursor-pointer"
+                            >
+                              <Copy className="w-3 h-3" />
+                              Copy Code
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRevokeInvitation(inv.id)}
+                              className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded cursor-pointer"
+                            >
+                              Revoke
+                            </button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* Add / Edit Teacher Modal */}
       <Modal
@@ -589,6 +857,167 @@ export const TeachersPage: React.FC = () => {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Invite Teacher Modal */}
+      <Modal
+        isOpen={showInviteModal}
+        onClose={() => {
+          setShowInviteModal(false);
+          setCreatedInvite(null);
+        }}
+        title="Invite Teaching Staff Member"
+        subtitle="Generate a secure, single-use activation invitation bound to your institution"
+        maxWidth="lg"
+      >
+        {createdInvite ? (
+          <div className="space-y-4 text-center py-2">
+            <div className="w-12 h-12 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center mx-auto">
+              <Check className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-900">Invitation Generated Successfully</h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Share this activation code or link with <strong>{createdInvite.teacherData?.firstName} {createdInvite.teacherData?.lastName}</strong> ({createdInvite.email})
+              </p>
+            </div>
+
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                Single-Use Activation Code
+              </span>
+              <div className="font-mono text-xl font-black text-emerald-800 tracking-wider">
+                {createdInvite.id}
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Expires in 7 days. Can only be redeemed once.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-center gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  navigator.clipboard.writeText(createdInvite.id);
+                  setCopiedCode(true);
+                  setTimeout(() => setCopiedCode(false), 2000);
+                }}
+                leftIcon={copiedCode ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+              >
+                {copiedCode ? 'Copied Code!' : 'Copy Code'}
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  const inviteUrl = `${window.location.origin}/?invite=${createdInvite.id}`;
+                  navigator.clipboard.writeText(inviteUrl);
+                  alert('Full invitation activation link copied to clipboard!');
+                }}
+                leftIcon={<Copy className="w-4 h-4" />}
+              >
+                Copy Invite Link
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSendInvitation} className="space-y-4">
+            {inviteError && (
+              <div className="p-3 text-xs bg-rose-50 border border-rose-200 text-rose-700 rounded-lg">
+                {inviteError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                id="invite-first-name"
+                label="First Name *"
+                value={inviteFirstName}
+                onChange={(e) => setInviteFirstName(e.target.value)}
+                required
+                placeholder="e.g. Blessing"
+              />
+              <Input
+                id="invite-last-name"
+                label="Last Name *"
+                value={inviteLastName}
+                onChange={(e) => setInviteLastName(e.target.value)}
+                required
+                placeholder="e.g. Musa"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                id="invite-email"
+                type="email"
+                label="Teacher Email Address *"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                required
+                placeholder="teacher@school.ng"
+                helperText="Invitation will be strictly bound to this email."
+              />
+              <Input
+                id="invite-phone"
+                label="Phone Number"
+                value={invitePhone}
+                onChange={(e) => setInvitePhone(e.target.value)}
+                placeholder="080XXXXXXXX"
+              />
+            </div>
+
+            <Input
+              id="invite-emp-id"
+              label="Staff / Employee ID"
+              value={inviteEmployeeId}
+              onChange={(e) => setInviteEmployeeId(e.target.value)}
+              placeholder="EMP-001"
+            />
+
+            {/* Assigned Classes */}
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                Assign Initial Classes
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg max-h-36 overflow-y-auto">
+                {classes.map((cls) => {
+                  const isSelected = inviteClasses.includes(cls.classId);
+                  return (
+                    <label key={cls.classId} className="flex items-center gap-2 text-xs cursor-pointer p-1">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setInviteClasses([...inviteClasses, cls.classId]);
+                          } else {
+                            setInviteClasses(inviteClasses.filter((id) => id !== cls.classId));
+                          }
+                        }}
+                        className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span className="text-slate-800 font-medium">{cls.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-100">
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => setShowInviteModal(false)}
+                disabled={inviteSaving}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" isLoading={inviteSaving} leftIcon={<Send className="w-4 h-4" />}>
+                Generate Invitation Code
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
     </div>
   );

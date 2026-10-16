@@ -119,11 +119,40 @@ service cloud.firestore {
     // 1. School Profile & Settings (Public read, Staff write)
     match /schools/{schoolId} {
       allow read: if true;
-      allow create: if isAuthenticated() && isAdmin() && 
-        (isSuperAdmin() || getUserData().get('approvalStatus', 'PENDING_SETUP') == 'PENDING_SETUP');
+      allow create: if isAuthenticated() && 
+        (isSuperAdmin() || !exists(/databases/$(database)/documents/schools/$(schoolId)));
       allow update: if isAuthenticated() && (isAdmin() || isTeacher()) &&
         (isSuperAdmin() || schoolId == getUserSchoolId() || schoolId == 'default');
       allow delete: if isSuperAdmin() || (isAuthenticated() && isAdmin() && isApproved() && schoolId == getUserSchoolId());
+    }
+
+    // 1b. School Invitations (Expiring Single-Use Activation Tokens)
+    match /invitations/{invitationId} {
+      allow read: if true; // Public get to verify invitation code before or during signup
+      allow list: if isAuthenticated() && (isSuperAdmin() || (isAdmin() && isApproved()));
+      allow create: if isAuthenticated() && (isSuperAdmin() || (isAdmin() && isApproved() && canCreateInTenant()));
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (isAdmin() && isApproved() && docMatchesTenant(resource.data)) ||
+        (resource.data.get('status', '') == 'PENDING' && request.resource.data.get('status', '') == 'ACCEPTED')
+      );
+      allow delete: if isSuperAdmin() || (isAuthenticated() && isAdmin() && isApproved() && docMatchesTenant(resource.data));
+    }
+
+    // 1c. School Memberships (Multi-Tenant & Multi-School Association)
+    match /memberships/{membershipId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.get('userId', '') == request.auth.uid || 
+        (isAdmin() && resource.data.get('schoolId', '') == getUserSchoolId())
+      );
+      allow list: if isAuthenticated() && (isSuperAdmin() || (isAdmin() && isApproved()));
+      allow create, update: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (isAdmin() && isApproved() && canCreateInTenant()) || 
+        (request.auth.uid == request.resource.data.get('userId', ''))
+      );
+      allow delete: if isSuperAdmin() || (isAuthenticated() && isAdmin() && isApproved() && docMatchesTenant(resource.data));
     }
 
     match /schoolSettings/{docId} {

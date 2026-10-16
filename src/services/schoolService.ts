@@ -380,3 +380,123 @@ export const deleteSchool = async (
   }
 };
 
+/**
+ * Public School Registration:
+ * Safely registers a new school, prevents duplicate slugs/hijacking,
+ * binds the owner as the initial verified ADMIN, creates explicit membership,
+ * and provisions the standard curriculum.
+ */
+export const registerNewSchoolAndOwner = async (params: {
+  schoolName: string;
+  address: string;
+  phone: string;
+  email: string;
+  currentAcademicSession?: string;
+  currentTerm?: string;
+  ownerUid: string;
+  ownerEmail: string;
+  ownerName: string;
+}): Promise<{ schoolId: string; success: boolean }> => {
+  const {
+    schoolName,
+    address,
+    phone,
+    email,
+    currentAcademicSession = '2026/2027',
+    currentTerm = 'First Term',
+    ownerUid,
+    ownerEmail,
+    ownerName,
+  } = params;
+
+  if (!schoolName || !schoolName.trim()) {
+    throw new Error('School name is required.');
+  }
+  if (!ownerUid || !ownerEmail) {
+    throw new Error('Authenticated owner identity is required.');
+  }
+
+  // 1. Generate unique, clean slug
+  let baseSlug = schoolName
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+
+  if (!baseSlug) {
+    baseSlug = `school-${Date.now().toString(36)}`;
+  }
+
+  let finalSlug = baseSlug;
+  const existingSchool = await getDoc(doc(db, 'schools', finalSlug));
+  if (existingSchool.exists()) {
+    // Generate unique suffix
+    finalSlug = `${baseSlug}-${Math.random().toString(36).substring(2, 6)}`;
+  }
+
+  const { writeBatch } = await import('firebase/firestore');
+  const batch = writeBatch(db);
+
+  // 2. School Document
+  const schoolRef = doc(db, 'schools', finalSlug);
+  const newSchoolData: SchoolSettings = {
+    ...DEFAULT_SCHOOL_SETTINGS,
+    schoolId: finalSlug,
+    slug: finalSlug,
+    schoolName: schoolName.trim(),
+    address: address?.trim() || '',
+    phone: phone?.trim() || '',
+    email: email?.trim() || ownerEmail.trim(),
+    currentAcademicSession,
+    currentTerm,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  batch.set(schoolRef, newSchoolData);
+
+  // 3. User Document for Owner (Explicit ADMIN, NOT SUPER_ADMIN)
+  const userRef = doc(db, 'users', ownerUid);
+  batch.set(
+    userRef,
+    {
+      uid: ownerUid,
+      email: ownerEmail.toLowerCase().trim(),
+      displayName: ownerName?.trim() || 'School Administrator',
+      role: 'ADMIN',
+      schoolId: finalSlug,
+      isSuperAdmin: false,
+      approvalStatus: 'APPROVED',
+      active: true,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  // 4. Explicit SchoolMembership Document
+  const membershipId = `${finalSlug}_${ownerUid}`;
+  const membershipRef = doc(db, 'memberships', membershipId);
+  batch.set(membershipRef, {
+    id: membershipId,
+    userId: ownerUid,
+    userEmail: ownerEmail.toLowerCase().trim(),
+    schoolId: finalSlug,
+    schoolName: schoolName.trim(),
+    role: 'ADMIN',
+    status: 'ACTIVE',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  await batch.commit();
+
+  // 5. Seed curriculum
+  try {
+    await seedStandardCurriculumForSchool(finalSlug);
+  } catch (seedErr) {
+    console.warn('Notice seeding standard curriculum:', seedErr);
+  }
+
+  return { schoolId: finalSlug, success: true };
+};
+
+

@@ -24,14 +24,36 @@ import { UsageMonitoringPage } from './pages/superadmin/UsageMonitoringPage';
 import { AwaitingApprovalPage } from './pages/auth/AwaitingApprovalPage';
 import { ReportCardModal } from './components/results/ReportCardModal';
 import { Button } from './components/common/Button';
-import { AlertCircle } from 'lucide-react';
+import { Input } from './components/common/Input';
+import { Modal } from './components/common/Modal';
+import { AlertCircle, KeyRound, CheckCircle2, ArrowRight } from 'lucide-react';
 import { Student, Result, SchoolClass } from './types';
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
 import { db, testFirestoreConnection } from './services/firebase';
+import { acceptAndActivateInvitation } from './services/invitationService';
 
 export default function App() {
-  const { currentUser, appUser, role, isSuperAdmin, isAtLeastAdmin, loading: authLoading, logout, switchToRole } = useAuth();
-  const { settings, loading: schoolLoading, isConfigured } = useSchool();
+  const { 
+    currentUser, 
+    appUser, 
+    role, 
+    isSuperAdmin, 
+    isAtLeastAdmin, 
+    loading: authLoading, 
+    logout, 
+    switchToRole,
+    userMemberships,
+    activeMembership,
+    hasMultipleMemberships,
+    switchSchoolMembership,
+    refreshUserProfile
+  } = useAuth();
+  const { settings, loading: schoolLoading, isConfigured, reloadSettings } = useSchool();
+  const [showSchoolSelector, setShowSchoolSelector] = useState(false);
+  const [activationCode, setActivationCode] = useState('');
+  const [activatingCode, setActivatingCode] = useState(false);
+  const [activationError, setActivationError] = useState('');
+  const [activationSuccess, setActivationSuccess] = useState('');
 
   const [currentPage, setCurrentPage] = useState<string>('dashboard');
 
@@ -161,19 +183,86 @@ export default function App() {
   }
 
   // Authoritative School Membership Check
-  // Teachers and Parents must belong to a verified school and not fall back to default
-  if (!isSuperAdmin && (role === 'TEACHER' || role === 'PARENT') && (!appUser?.schoolId || !appUser?.schoolId.trim())) {
+  // Teachers, Parents and Staff must belong to a verified school and not fall back to default
+  if (!isSuperAdmin && (!appUser?.schoolId || !appUser?.schoolId.trim())) {
     return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 text-center">
-        <div className="max-w-md bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white p-6 sm:p-8 rounded-2xl shadow-sm border border-slate-200 text-center">
           <div className="w-12 h-12 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto mb-4">
-            <AlertCircle className="w-6 h-6" />
+            <KeyRound className="w-6 h-6" />
           </div>
-          <h2 className="text-xl font-bold text-slate-900 mb-2">Account Not Assigned to a School</h2>
-          <p className="text-slate-600 text-xs sm:text-sm mb-6 leading-relaxed">
-            Your account ({appUser?.email}) has not yet been assigned to an active school by an administrator. Please contact your school administration office to complete your enrollment.
+          <h2 className="text-xl font-bold text-slate-900 mb-1">School Membership Required</h2>
+          <p className="text-slate-600 text-xs sm:text-sm mb-4 leading-relaxed">
+            Your account ({appUser?.email}) is not yet associated with an authorized school institution.
           </p>
-          <Button variant="outline" onClick={logout}>Sign Out</Button>
+
+          {activationError && (
+            <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs text-left">
+              {activationError}
+            </div>
+          )}
+
+          {activationSuccess && (
+            <div className="mb-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs text-left">
+              {activationSuccess}
+            </div>
+          )}
+
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!activationCode.trim()) {
+                setActivationError('Please enter your invitation code.');
+                return;
+              }
+              if (!currentUser) return;
+              setActivatingCode(true);
+              setActivationError('');
+              setActivationSuccess('');
+              try {
+                await acceptAndActivateInvitation({
+                  code: activationCode.trim().toUpperCase(),
+                  userUid: currentUser.uid,
+                  userEmail: currentUser.email || appUser?.email || '',
+                  displayName: currentUser.displayName || appUser?.displayName,
+                });
+                setActivationSuccess('Invitation activated! Loading school dashboard...');
+                await reloadSettings();
+                await refreshUserProfile();
+              } catch (err: any) {
+                setActivationError(err.message || 'Failed to activate invitation.');
+              } finally {
+                setActivatingCode(false);
+              }
+            }}
+            className="space-y-3 mb-4 text-left"
+          >
+            <Input
+              id="recovery-activation-code"
+              label="Enter School Invitation Code"
+              placeholder="e.g. INV-ABCD-EFGH"
+              value={activationCode}
+              onChange={(e) => setActivationCode(e.target.value.toUpperCase())}
+              required
+              helperText="Enter the single-use invite code provided by your school administrator."
+            />
+            <Button
+              type="submit"
+              variant="primary"
+              className="w-full"
+              isLoading={activatingCode}
+              leftIcon={<CheckCircle2 className="w-4 h-4" />}
+            >
+              Activate & Enter School
+            </Button>
+          </form>
+
+          <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+            <span>Teachers & parents must be invited.</span>
+            <Button variant="ghost" size="sm" onClick={logout}>
+              Sign Out
+            </Button>
+          </div>
         </div>
       </div>
     );

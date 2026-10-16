@@ -12,7 +12,7 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../services/firebase';
-import { AppUser, UserRole, Parent, Teacher, UserApprovalStatus } from '../types';
+import { AppUser, UserRole, Parent, Teacher, UserApprovalStatus, SchoolMembership } from '../types';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -24,13 +24,17 @@ interface AuthContextType {
   loading: boolean;
   currentParent: Parent | null;
   currentTeacher: Teacher | null;
-  login: (email: string, pass: string, portalRole?: UserRole) => Promise<void>;
+  userMemberships: SchoolMembership[];
+  activeMembership: SchoolMembership | null;
+  hasMultipleMemberships: boolean;
+  login: (email: string, pass: string) => Promise<void>;
   signup: (email: string, pass: string, name: string, role?: UserRole, schoolId?: string) => Promise<void>;
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   updateUserPassword: (currentPass: string, newPass: string) => Promise<void>;
   refreshUserProfile: () => Promise<void>;
   switchToRole: (newRole: UserRole, targetSchoolId?: string) => Promise<void>;
+  switchSchoolMembership: (schoolId: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -40,9 +44,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [appUser, setAppUser] = useState<AppUser | null>(null);
   const [currentParent, setCurrentParent] = useState<Parent | null>(null);
   const [currentTeacher, setCurrentTeacher] = useState<Teacher | null>(null);
+  const [userMemberships, setUserMemberships] = useState<SchoolMembership[]>([]);
+  const [activeMembership, setActiveMembership] = useState<SchoolMembership | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchProfile = async (firebaseUser: User, overrideRole?: UserRole) => {
+  const fetchProfile = async (firebaseUser: User) => {
     try {
       const fetchWithTimeout = async (ref: any) => {
         const snapPromise = getDoc(ref).catch((err) => {
@@ -61,137 +67,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         emailLower === 'ilearnovate1@gmail.com' || 
         emailLower === 'admin@edukonnect.ng';
 
-      // 1. Authoritative Membership Search in Firestore
-      // Search teachers collection by email or userId
-      let teacherDoc: Teacher | null = null;
-      try {
-        const tQuery = query(collection(db, 'teachers'), where('email', '==', emailLower));
-        const tSnap = await getDocs(tQuery);
-        if (!tSnap.empty) {
-          teacherDoc = tSnap.docs[0].data() as Teacher;
-        } else {
-          const tQuery2 = query(collection(db, 'teachers'), where('userId', '==', firebaseUser.uid));
-          const tSnap2 = await getDocs(tQuery2);
-          if (!tSnap2.empty) {
-            teacherDoc = tSnap2.docs[0].data() as Teacher;
-          }
-        }
-      } catch (tErr) {
-        console.warn('Teacher lookup notice:', tErr);
-      }
-
-      // Search parents collection by email or userId
-      let parentDoc: Parent | null = null;
-      try {
-        const pQuery = query(collection(db, 'parents'), where('email', '==', emailLower));
-        const pSnap = await getDocs(pQuery);
-        if (!pSnap.empty) {
-          parentDoc = pSnap.docs[0].data() as Parent;
-        } else {
-          const pQuery2 = query(collection(db, 'parents'), where('userId', '==', firebaseUser.uid));
-          const pSnap2 = await getDocs(pQuery2);
-          if (!pSnap2.empty) {
-            parentDoc = pSnap2.docs[0].data() as Parent;
-          }
-        }
-      } catch (pErr) {
-        console.warn('Parent lookup notice:', pErr);
-      }
-
-      // 2. Authoritative Teacher Resolution
-      if (teacherDoc) {
-        const targetSchoolId = teacherDoc.schoolId?.trim().toLowerCase() || '';
-        const userDisplayName = teacherDoc.firstName && teacherDoc.lastName 
-          ? `${teacherDoc.firstName} ${teacherDoc.lastName}`
-          : firebaseUser.displayName || 'Teacher';
-
-        // Link userId on teacher record if missing
-        if (!teacherDoc.userId || teacherDoc.userId !== firebaseUser.uid) {
-          try {
-            await updateDoc(doc(db, 'teachers', teacherDoc.teacherId), {
-              userId: firebaseUser.uid,
-              updatedAt: serverTimestamp()
-            });
-            teacherDoc.userId = firebaseUser.uid;
-          } catch (linkErr) {
-            console.warn('Could not link teacher userId:', linkErr);
-          }
-        }
-
-        const teacherUser: AppUser = {
-          uid: firebaseUser.uid,
-          email: emailLower,
-          displayName: userDisplayName,
-          role: 'TEACHER',
-          isSuperAdmin: false,
-          schoolId: targetSchoolId,
-          teacherId: teacherDoc.teacherId,
-          assignedClassIds: teacherDoc.assignedClassIds || [],
-          approvalStatus: targetSchoolId ? 'APPROVED' : 'PENDING_APPROVAL',
-          active: teacherDoc.status !== 'INACTIVE',
-          createdAt: userSnap?.exists?.() ? userSnap.data()?.createdAt || serverTimestamp() : serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        };
-
-        try {
-          await setDoc(userDocRef, teacherUser, { merge: true });
-        } catch (syncErr) {
-          console.warn('User doc sync notice for teacher:', syncErr);
-        }
-
-        setCurrentTeacher(teacherDoc);
-        setCurrentParent(null);
-        setAppUser(teacherUser);
-        return;
-      }
-
-      // 3. Authoritative Parent Resolution
-      if (parentDoc) {
-        const targetSchoolId = parentDoc.schoolId?.trim().toLowerCase() || '';
-        const userDisplayName = parentDoc.firstName && parentDoc.lastName
-          ? `${parentDoc.firstName} ${parentDoc.lastName}`
-          : firebaseUser.displayName || 'Parent';
-
-        // Link userId on parent record if missing
-        if (!parentDoc.userId || parentDoc.userId !== firebaseUser.uid) {
-          try {
-            await updateDoc(doc(db, 'parents', parentDoc.parentId), {
-              userId: firebaseUser.uid,
-              updatedAt: serverTimestamp()
-            });
-            parentDoc.userId = firebaseUser.uid;
-          } catch (linkErr) {
-            console.warn('Could not link parent userId:', linkErr);
-          }
-        }
-
-        const parentUser: AppUser = {
-          uid: firebaseUser.uid,
-          email: emailLower,
-          displayName: userDisplayName,
-          role: 'PARENT',
-          isSuperAdmin: false,
-          schoolId: targetSchoolId,
-          parentId: parentDoc.parentId,
-          approvalStatus: targetSchoolId ? 'APPROVED' : 'PENDING_APPROVAL',
-          active: true,
-          createdAt: userSnap?.exists?.() ? userSnap.data()?.createdAt || serverTimestamp() : serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        };
-
-        try {
-          await setDoc(userDocRef, parentUser, { merge: true });
-        } catch (syncErr) {
-          console.warn('User doc sync notice for parent:', syncErr);
-        }
-
-        setCurrentParent(parentDoc);
-        setCurrentTeacher(null);
-        setAppUser(parentUser);
-        return;
-      }
-
-      // 4. Platform Super Admin Resolution
+      // 1. Platform Super Admin Resolution
       if (isSuperAdminEmail) {
         const superAdminUser: AppUser = {
           uid: firebaseUser.uid,
@@ -214,66 +90,246 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         setCurrentTeacher(null);
         setCurrentParent(null);
+        setUserMemberships([]);
+        setActiveMembership(null);
         setAppUser(superAdminUser);
         return;
       }
 
-      // 5. Existing User Document Processing (School Admin / Staff)
+      // 2. Discover Authoritative Memberships across sources
+      const discoveredMemberships: SchoolMembership[] = [];
+
+      // A. Query memberships collection
+      try {
+        const mQuery1 = query(collection(db, 'memberships'), where('userId', '==', firebaseUser.uid));
+        const mSnap1 = await getDocs(mQuery1);
+        mSnap1.forEach((d) => {
+          const m = { id: d.id, ...d.data() } as SchoolMembership;
+          if (m.status === 'ACTIVE' || !m.status) discoveredMemberships.push(m);
+        });
+
+        if (discoveredMemberships.length === 0 && emailLower) {
+          const mQuery2 = query(collection(db, 'memberships'), where('userEmail', '==', emailLower));
+          const mSnap2 = await getDocs(mQuery2);
+          mSnap2.forEach((d) => {
+            const m = { id: d.id, ...d.data() } as SchoolMembership;
+            if (m.status === 'ACTIVE' || !m.status) discoveredMemberships.push(m);
+          });
+        }
+      } catch (mErr) {
+        console.warn('Membership query notice:', mErr);
+      }
+
+      // B. Query teachers collection
+      let teacherDocs: Teacher[] = [];
+      try {
+        const tQuery = query(collection(db, 'teachers'), where('email', '==', emailLower));
+        const tSnap = await getDocs(tQuery);
+        tSnap.forEach((d) => teacherDocs.push(d.data() as Teacher));
+
+        const tQuery2 = query(collection(db, 'teachers'), where('userId', '==', firebaseUser.uid));
+        const tSnap2 = await getDocs(tQuery2);
+        tSnap2.forEach((d) => {
+          const td = d.data() as Teacher;
+          if (!teacherDocs.some((t) => t.teacherId === td.teacherId)) {
+            teacherDocs.push(td);
+          }
+        });
+      } catch (tErr) {
+        console.warn('Teacher lookup notice:', tErr);
+      }
+
+      teacherDocs.forEach((t) => {
+        const tSchool = t.schoolId?.trim().toLowerCase();
+        if (tSchool && t.status !== 'INACTIVE') {
+          if (!discoveredMemberships.some((m) => m.schoolId.toLowerCase() === tSchool && m.role === 'TEACHER')) {
+            discoveredMemberships.push({
+              id: `${tSchool}_${firebaseUser.uid}`,
+              userId: firebaseUser.uid,
+              userEmail: emailLower,
+              schoolId: tSchool,
+              role: 'TEACHER',
+              status: 'ACTIVE',
+              teacherId: t.teacherId,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+      });
+
+      // C. Query parents collection
+      let parentDocs: Parent[] = [];
+      try {
+        const pQuery = query(collection(db, 'parents'), where('email', '==', emailLower));
+        const pSnap = await getDocs(pQuery);
+        pSnap.forEach((d) => parentDocs.push(d.data() as Parent));
+
+        const pQuery2 = query(collection(db, 'parents'), where('userId', '==', firebaseUser.uid));
+        const pSnap2 = await getDocs(pQuery2);
+        pSnap2.forEach((d) => {
+          const pd = d.data() as Parent;
+          if (!parentDocs.some((p) => p.parentId === pd.parentId)) {
+            parentDocs.push(pd);
+          }
+        });
+      } catch (pErr) {
+        console.warn('Parent lookup notice:', pErr);
+      }
+
+      parentDocs.forEach((p) => {
+        const pSchool = p.schoolId?.trim().toLowerCase();
+        if (pSchool) {
+          if (!discoveredMemberships.some((m) => m.schoolId.toLowerCase() === pSchool && m.role === 'PARENT')) {
+            discoveredMemberships.push({
+              id: `${pSchool}_${firebaseUser.uid}`,
+              userId: firebaseUser.uid,
+              userEmail: emailLower,
+              schoolId: pSchool,
+              role: 'PARENT',
+              status: 'ACTIVE',
+              parentId: p.parentId,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+      });
+
+      // D. Check existing user document for ADMIN role & schoolId
+      let existingUserDoc: AppUser | null = null;
       if (userSnap && userSnap.exists && userSnap.exists()) {
-        const uData = userSnap.data() as AppUser;
-        
-        // Prevent unauthorized client elevation to SUPER_ADMIN
-        if (uData.role === 'SUPER_ADMIN' && !isSuperAdminEmail && !uData.isSuperAdmin) {
-          uData.role = 'ADMIN';
-        }
-
-        // Validate School Admin school membership
-        if (uData.role === 'ADMIN') {
-          if (!uData.schoolId || uData.schoolId === 'default') {
-            // Check if this admin has configured a school
-            uData.approvalStatus = uData.approvalStatus || 'PENDING_SETUP';
+        existingUserDoc = userSnap.data() as AppUser;
+        if (existingUserDoc.role === 'ADMIN' && existingUserDoc.schoolId && existingUserDoc.schoolId !== 'default') {
+          const adminSchool = existingUserDoc.schoolId.trim().toLowerCase();
+          if (!discoveredMemberships.some((m) => m.schoolId.toLowerCase() === adminSchool && m.role === 'ADMIN')) {
+            discoveredMemberships.push({
+              id: `${adminSchool}_${firebaseUser.uid}`,
+              userId: firebaseUser.uid,
+              userEmail: emailLower,
+              schoolId: adminSchool,
+              role: 'ADMIN',
+              status: 'ACTIVE',
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
           }
         }
+      }
 
-        // If user document previously had role TEACHER or PARENT but no matching record exists in teachers/parents
-        if (uData.role === 'TEACHER' || uData.role === 'PARENT') {
-          if (!uData.schoolId || uData.schoolId === 'default') {
-            // Unverified membership: do not assign default school
-            uData.schoolId = '';
-            uData.approvalStatus = 'PENDING_APPROVAL';
-          }
+      setUserMemberships(discoveredMemberships);
+
+      // 3. Determine Active Membership
+      let preferredSchoolId: string | null = null;
+      try {
+        preferredSchoolId = localStorage.getItem('active_authorized_school_id');
+      } catch (e) {}
+
+      let selectedMembership: SchoolMembership | null = null;
+      if (preferredSchoolId) {
+        selectedMembership = discoveredMemberships.find(
+          (m) => m.schoolId.toLowerCase() === preferredSchoolId?.toLowerCase()
+        ) || null;
+      }
+
+      if (!selectedMembership && discoveredMemberships.length > 0) {
+        selectedMembership = discoveredMemberships[0];
+      }
+
+      setActiveMembership(selectedMembership);
+
+      // 4. Apply Active Membership Context
+      if (selectedMembership) {
+        const targetSchoolId = selectedMembership.schoolId.trim().toLowerCase();
+        const role = selectedMembership.role;
+
+        let activeTeacher: Teacher | null = null;
+        let activeParent: Parent | null = null;
+
+        if (role === 'TEACHER') {
+          activeTeacher = teacherDocs.find((t) => t.schoolId?.toLowerCase() === targetSchoolId) || null;
+          setCurrentTeacher(activeTeacher);
+          setCurrentParent(null);
+        } else if (role === 'PARENT') {
+          activeParent = parentDocs.find((p) => p.schoolId?.toLowerCase() === targetSchoolId) || null;
+          setCurrentParent(activeParent);
+          setCurrentTeacher(null);
+        } else {
+          setCurrentTeacher(null);
+          setCurrentParent(null);
         }
 
-        setAppUser(uData);
+        const userDisplayName = activeTeacher
+          ? `${activeTeacher.firstName} ${activeTeacher.lastName}`.trim()
+          : activeParent
+          ? `${activeParent.firstName} ${activeParent.lastName}`.trim()
+          : existingUserDoc?.displayName || firebaseUser.displayName || 'EduKonnect User';
+
+        const finalUser: AppUser = {
+          uid: firebaseUser.uid,
+          email: emailLower,
+          displayName: userDisplayName,
+          role,
+          isSuperAdmin: false,
+          schoolId: targetSchoolId,
+          teacherId: activeTeacher?.teacherId || selectedMembership.teacherId,
+          parentId: activeParent?.parentId || selectedMembership.parentId,
+          assignedClassIds: activeTeacher?.assignedClassIds || [],
+          approvalStatus: 'APPROVED',
+          active: true,
+          memberships: discoveredMemberships,
+          createdAt: existingUserDoc?.createdAt || serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
+        try {
+          await setDoc(userDocRef, finalUser, { merge: true });
+        } catch (e) {
+          console.warn('Could not update active user doc:', e);
+        }
+
+        setAppUser(finalUser);
+        return;
+      }
+
+      // 5. No Active Membership Found:
+      // If user is a new school admin awaiting initial setup
+      if (existingUserDoc && existingUserDoc.role === 'ADMIN' && (!existingUserDoc.schoolId || existingUserDoc.schoolId === 'default')) {
+        const setupUser: AppUser = {
+          ...existingUserDoc,
+          schoolId: '',
+          approvalStatus: 'PENDING_SETUP',
+          memberships: [],
+        };
+        setAppUser(setupUser);
         setCurrentTeacher(null);
         setCurrentParent(null);
         return;
       }
 
-      // 6. First-time registration or login for School Administrator
-      const initialApproval: UserApprovalStatus = 'PENDING_SETUP';
-      const newAdminUser: AppUser = {
+      // 6. Otherwise: Account has no valid school membership.
+      // Must NOT default to default school.
+      const unassignedUser: AppUser = {
         uid: firebaseUser.uid,
         email: emailLower,
-        role: 'ADMIN',
+        displayName: firebaseUser.displayName || 'User',
+        role: existingUserDoc?.role || 'TEACHER',
         isSuperAdmin: false,
-        approvalStatus: initialApproval,
-        schoolId: '', // Explicitly empty; must be configured in InitialSetupPage
-        displayName: firebaseUser.displayName || 'School Administrator',
+        schoolId: '', // Explicitly empty
+        approvalStatus: 'PENDING_APPROVAL',
         active: true,
-        createdAt: serverTimestamp(),
+        memberships: [],
+        createdAt: existingUserDoc?.createdAt || serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
 
       try {
-        await setDoc(userDocRef, newAdminUser);
-      } catch (e) {
-        console.warn('Could not persist initial admin user doc:', e);
-      }
+        await setDoc(userDocRef, unassignedUser, { merge: true });
+      } catch (e) {}
 
+      setAppUser(unassignedUser);
       setCurrentTeacher(null);
       setCurrentParent(null);
-      setAppUser(newAdminUser);
 
     } catch (err: any) {
       console.warn('Notice fetching user profile from Firestore:', err?.message || err);
@@ -298,9 +354,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /**
-   * Privilege escalation prevention:
-   * Only authenticated SUPER_ADMIN can switch views/roles for simulation.
-   * Ordinary teachers, parents, and admins CANNOT modify their role or school membership.
+   * Switch between multiple authorized school memberships safely.
+   */
+  const switchSchoolMembership = async (targetSchoolId: string) => {
+    const cleanTarget = targetSchoolId.trim().toLowerCase();
+    const targetMembership = userMemberships.find((m) => m.schoolId.toLowerCase() === cleanTarget);
+    if (!targetMembership) {
+      console.warn('Unauthorized switch attempt: No membership found for school', targetSchoolId);
+      return;
+    }
+
+    try {
+      localStorage.setItem('active_authorized_school_id', cleanTarget);
+    } catch (e) {}
+
+    setActiveMembership(targetMembership);
+
+    if (currentUser) {
+      await fetchProfile(currentUser);
+    }
+  };
+
+  /**
+   * Simulation role switch (SUPER_ADMIN only)
    */
   const switchToRole = async (newRole: UserRole, targetSchoolId?: string) => {
     if (!currentUser || !appUser) return;
@@ -310,7 +386,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // SUPER_ADMIN preview role in memory only - do not overwrite database account
     setAppUser((prev) => {
       if (!prev) return null;
       return {
@@ -322,7 +397,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    // Safety timer: ensure loading is never stuck at true for more than 2.5 seconds
     const safetyTimer = setTimeout(() => {
       setLoading(false);
     }, 2500);
@@ -340,6 +414,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setAppUser(null);
         setCurrentParent(null);
         setCurrentTeacher(null);
+        setUserMemberships([]);
+        setActiveMembership(null);
       }
       setLoading(false);
     });
@@ -350,14 +426,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  const login = async (email: string, pass: string, portalRole?: UserRole) => {
+  const login = async (email: string, pass: string) => {
     const res = await signInWithEmailAndPassword(auth, email.trim(), pass);
-    if (portalRole) {
-      try {
-        localStorage.setItem('preferred_portal_role', portalRole);
-      } catch (e) {}
-    }
-    await fetchProfile(res.user, portalRole);
+    await fetchProfile(res.user);
   };
 
   const signup = async (
@@ -368,7 +439,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     schoolId: string = ''
   ) => {
     const res = await createUserWithEmailAndPassword(auth, email.trim(), pass);
-    // Leverage authoritative membership resolution
     await fetchProfile(res.user);
   };
 
@@ -377,6 +447,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAppUser(null);
     setCurrentParent(null);
     setCurrentTeacher(null);
+    setUserMemberships([]);
+    setActiveMembership(null);
   };
 
   const resetPassword = async (email: string) => {
@@ -394,7 +466,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('New password must be at least 6 characters long.');
     }
     
-    // 1. Re-authenticate first (required for sensitive ops)
+    // 1. Re-authenticate first
     try {
       const credential = EmailAuthProvider.credential(currentUser.email, currentPass.trim());
       await reauthenticateWithCredential(currentUser, credential);
@@ -446,6 +518,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loading,
         currentParent,
         currentTeacher,
+        userMemberships,
+        activeMembership,
+        hasMultipleMemberships: userMemberships.length > 1,
         login,
         signup,
         logout,
@@ -453,6 +528,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateUserPassword,
         refreshUserProfile,
         switchToRole,
+        switchSchoolMembership,
       }}
     >
       {children}
