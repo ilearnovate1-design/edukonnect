@@ -502,6 +502,21 @@ export const calculateClassBroadsheet = (
 };
 
 /**
+ * Default 5-Point Affective Rating Scale for Nigerian School Reports
+ */
+export const DEFAULT_AFFECTIVE_SCALE = {
+  min: 1,
+  max: 5,
+  labels: {
+    1: 'Poor / Needs Improvement',
+    2: 'Fair',
+    3: 'Good',
+    4: 'Very Good',
+    5: 'Excellent / Distinction',
+  },
+};
+
+/**
  * Pre-configured editable default grading profiles
  * Clearly labeled as editable reference templates, not official universal standards.
  */
@@ -526,6 +541,7 @@ export const DEFAULT_GRADING_PROFILES: Record<GradingLevelCategory, Omit<Grading
       { min: 50, max: 64, grade: 'EM', remark: 'Emerging Skills', gradePoint: 2.0 },
       { min: 0, max: 49, grade: 'ND', remark: 'Needs Development', gradePoint: 1.0 },
     ],
+    affectiveScale: DEFAULT_AFFECTIVE_SCALE,
     displaySettings: {
       showAttendance: true,
       showPosition: false,
@@ -572,6 +588,7 @@ export const DEFAULT_GRADING_PROFILES: Record<GradingLevelCategory, Omit<Grading
       { min: 40, max: 49, grade: 'D', remark: 'Pass', gradePoint: 2.0 },
       { min: 0, max: 39, grade: 'F', remark: 'Fail', gradePoint: 0.0 },
     ],
+    affectiveScale: DEFAULT_AFFECTIVE_SCALE,
     displaySettings: {
       showAttendance: true,
       showPosition: true,
@@ -617,6 +634,7 @@ export const DEFAULT_GRADING_PROFILES: Record<GradingLevelCategory, Omit<Grading
       { min: 40, max: 49, grade: 'P', remark: 'Pass', gradePoint: 2.0 },
       { min: 0, max: 39, grade: 'F', remark: 'Fail', gradePoint: 0.0 },
     ],
+    affectiveScale: DEFAULT_AFFECTIVE_SCALE,
     displaySettings: {
       showAttendance: true,
       showPosition: true,
@@ -665,6 +683,7 @@ export const DEFAULT_GRADING_PROFILES: Record<GradingLevelCategory, Omit<Grading
       { min: 40, max: 44, grade: 'E8', remark: 'Fair', gradePoint: 1.0 },
       { min: 0, max: 39, grade: 'F9', remark: 'Fail', gradePoint: 0.0 },
     ],
+    affectiveScale: DEFAULT_AFFECTIVE_SCALE,
     displaySettings: {
       showAttendance: true,
       showPosition: true,
@@ -710,6 +729,7 @@ export const DEFAULT_GRADING_PROFILES: Record<GradingLevelCategory, Omit<Grading
       { min: 40, max: 44, grade: 'E', remark: 'Fair', gradePoint: 1.0 },
       { min: 0, max: 39, grade: 'F', remark: 'Fail', gradePoint: 0.0 },
     ],
+    affectiveScale: DEFAULT_AFFECTIVE_SCALE,
     displaySettings: {
       showAttendance: true,
       showPosition: true,

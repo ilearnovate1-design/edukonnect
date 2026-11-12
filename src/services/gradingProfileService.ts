@@ -17,9 +17,40 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { GradingProfile, SchoolClass, Subject } from '../types';
-import { DEFAULT_GRADING_PROFILES, validateGradingProfile } from './assessmentEngine';
+import { DEFAULT_GRADING_PROFILES, DEFAULT_AFFECTIVE_SCALE, validateGradingProfile } from './assessmentEngine';
 
 const PROFILES_COLLECTION = 'gradingProfiles';
+
+/**
+ * Recursively removes any keys with undefined values from objects and arrays,
+ * preserving special Firestore types like FieldValue (serverTimestamp), Timestamps, and Dates.
+ */
+export const sanitizeFirestoreData = <T>(data: T): T => {
+  if (data === null || data === undefined) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data.map(item => sanitizeFirestoreData(item)) as unknown as T;
+  }
+  if (typeof data === 'object') {
+    if (
+      data instanceof Date ||
+      ('_methodName' in (data as any)) ||
+      ('nanoseconds' in (data as any)) ||
+      ('seconds' in (data as any))
+    ) {
+      return data;
+    }
+    const cleanObj: Record<string, any> = {};
+    for (const [key, val] of Object.entries(data as Record<string, any>)) {
+      if (val !== undefined) {
+        cleanObj[key] = sanitizeFirestoreData(val);
+      }
+    }
+    return cleanObj as T;
+  }
+  return data;
+};
 
 /**
  * Fetch all grading profiles for a tenant school
@@ -70,7 +101,7 @@ export const seedDefaultGradingProfilesForSchool = async (schoolId: string = 'de
     };
 
     const docRef = doc(db, PROFILES_COLLECTION, profileId);
-    batch.set(docRef, profile, { merge: true });
+    batch.set(docRef, sanitizeFirestoreData(profile), { merge: true });
     profilesToSeed.push(profile);
   }
 
@@ -98,7 +129,7 @@ export const saveGradingProfile = async (
   const currentVersion = profile.version || 1;
   const isUpdate = !!profile.profileId;
 
-  const payload: GradingProfile = {
+  const rawPayload: Record<string, any> = {
     profileId,
     schoolId: profile.schoolId,
     name: profile.name.trim(),
@@ -111,13 +142,20 @@ export const saveGradingProfile = async (
     components: profile.components || [],
     gradeBands: [...(profile.gradeBands || [])].sort((a, b) => b.min - a.min),
     subjectOverrides: profile.subjectOverrides || {},
-    affectiveScale: profile.affectiveScale,
-    promotionRule: profile.promotionRule,
-    displaySettings: profile.displaySettings,
+    affectiveScale: profile.affectiveScale || DEFAULT_AFFECTIVE_SCALE,
     version: isUpdate ? currentVersion + 1 : 1,
     createdAt: profile.createdAt || serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
+
+  if (profile.promotionRule !== undefined) {
+    rawPayload.promotionRule = profile.promotionRule;
+  }
+  if (profile.displaySettings !== undefined) {
+    rawPayload.displaySettings = profile.displaySettings;
+  }
+
+  const payload = sanitizeFirestoreData(rawPayload);
 
   const docRef = doc(db, PROFILES_COLLECTION, profileId);
   await setDoc(docRef, payload, { merge: true });

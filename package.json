@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx scripts/test-assessment-engine.ts && tsx scripts/test-school-assignment.ts && tsx scripts/test-unified-onboarding.ts",
+    "test": "tsx scripts/test-assessment-engine.ts && tsx scripts/test-school-assignment.ts && tsx scripts/test-unified-onboarding.ts && tsx scripts/test-grading-profile-save.ts",
     "verify-migration": "tsx scripts/verify-tenant-migration.ts"
   },
   "dependencies": {
