@@ -17,9 +17,6 @@ import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
 import { createTeacherInvitation, getSchoolInvitations, revokeInvitation } from '../../services/invitationService';
-import { sanitizeFirestoreData } from '../../services/gradingProfileService';
-import { useQueryTab } from '../../routes/useQueryTab';
-import { buildHashRouteUrl } from '../../routes/routes';
 
 export const TeachersPage: React.FC = () => {
   const { role, currentUser, appUser, isSuperAdmin } = useAuth();
@@ -30,11 +27,7 @@ export const TeachersPage: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useQueryTab<'teachers' | 'invitations'>(
-    'tab',
-    'teachers',
-    ['teachers', 'invitations']
-  );
+  const [activeTab, setActiveTab] = useState<'teachers' | 'invitations'>('teachers');
 
   // Add/Edit Modal
   const [showModal, setShowModal] = useState(false);
@@ -66,9 +59,7 @@ export const TeachersPage: React.FC = () => {
   const [copiedCode, setCopiedCode] = useState(false);
 
   const matchesTenant = (itemSchoolId?: string) => {
-    const active = schoolId?.trim().toLowerCase();
-    const item = itemSchoolId?.trim().toLowerCase();
-    return item ? item === active : (active === 'default' || !active);
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   const generatePassword = () => {
@@ -133,15 +124,13 @@ export const TeachersPage: React.FC = () => {
   }, [schoolId]);
 
   const handleToggleTeacherStatus = async (teacher: Teacher) => {
-    const adminSchool = (isSuperAdmin ? (schoolId || appUser?.schoolId || '') : (appUser?.schoolId || schoolId || '')).trim().toLowerCase();
-    const tSchool = teacher.schoolId?.trim().toLowerCase() || '';
-    if (!isSuperAdmin && tSchool && tSchool !== adminSchool) {
+    const adminSchool = isSuperAdmin ? (schoolId || appUser?.schoolId || '') : (appUser?.schoolId || schoolId || '');
+    if (!isSuperAdmin && teacher.schoolId && teacher.schoolId !== adminSchool) {
       alert('Unauthorized: You cannot modify teachers belonging to another school.');
       return;
     }
 
     const nextStatus = teacher.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-    const targetSchool = tSchool || adminSchool;
     try {
       await updateDoc(doc(db, 'teachers', teacher.teacherId), {
         status: nextStatus,
@@ -154,22 +143,6 @@ export const TeachersPage: React.FC = () => {
             updatedAt: serverTimestamp(),
           });
         } catch (uErr) {}
-        if (targetSchool) {
-          try {
-            await setDoc(doc(db, 'memberships', `${targetSchool}_${teacher.userId}`), {
-              id: `${targetSchool}_${teacher.userId}`,
-              userId: teacher.userId,
-              userEmail: teacher.email.trim().toLowerCase(),
-              schoolId: targetSchool,
-              role: 'TEACHER',
-              teacherId: teacher.teacherId,
-              status: nextStatus === 'ACTIVE' ? 'ACTIVE' : 'SUSPENDED',
-              updatedAt: serverTimestamp(),
-            }, { merge: true });
-          } catch (mErr) {
-            console.warn('Teacher membership status sync notice:', mErr);
-          }
-        }
       }
       await logAudit(
         currentUser?.uid || 'admin',
@@ -345,34 +318,10 @@ export const TeachersPage: React.FC = () => {
         }
       }
 
-      // If user ID was not assigned yet, check memberships or school users with this email
+      // If user ID was not assigned yet, check if a user document exists with this email
       if (!resolvedUserId) {
         try {
-          const mSnap = await getDocs(
-            query(
-              collection(db, 'memberships'),
-              where('schoolId', '==', normalizedSchoolId),
-              where('userEmail', '==', normalizedEmail)
-            )
-          );
-          if (!mSnap.empty) {
-            resolvedUserId = (mSnap.docs[0].data() as any).userId;
-            if (resolvedUserId) payload.userId = resolvedUserId;
-          }
-        } catch (mLookupErr) {
-          console.warn('Membership lookup notice:', mLookupErr);
-        }
-      }
-
-      if (!resolvedUserId) {
-        try {
-          const uSnap = await getDocs(
-            query(
-              collection(db, 'users'),
-              where('schoolId', '==', normalizedSchoolId),
-              where('email', '==', normalizedEmail)
-            )
-          );
+          const uSnap = await getDocs(query(collection(db, 'users'), where('email', '==', normalizedEmail)));
           if (!uSnap.empty) {
             resolvedUserId = uSnap.docs[0].id;
             payload.userId = resolvedUserId;
@@ -382,30 +331,8 @@ export const TeachersPage: React.FC = () => {
         }
       }
 
-      // Keep membership & user doc securely in sync with verified schoolId, role, and assignments
+      // Keep user doc securely in sync with verified schoolId, role, and assignments
       if (resolvedUserId) {
-        try {
-          await setDoc(
-            doc(db, 'memberships', `${normalizedSchoolId}_${resolvedUserId}`),
-            sanitizeFirestoreData({
-              id: `${normalizedSchoolId}_${resolvedUserId}`,
-              userId: resolvedUserId,
-              userEmail: normalizedEmail,
-              schoolId: normalizedSchoolId,
-              schoolName: settings.schoolName || 'EduKonnect School',
-              role: 'TEACHER',
-              status: status === 'ACTIVE' ? 'ACTIVE' : 'SUSPENDED',
-              teacherId: tId,
-              activatedAt: serverTimestamp(),
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            }),
-            { merge: true }
-          );
-        } catch (memSyncErr) {
-          console.warn('Teacher membership sync notice:', memSyncErr);
-        }
-
         try {
           await setDoc(doc(db, 'users', resolvedUserId), {
             schoolId: normalizedSchoolId,
@@ -414,7 +341,6 @@ export const TeachersPage: React.FC = () => {
             assignedClassIds,
             displayName: `${firstName.trim()} ${lastName.trim()}`,
             approvalStatus: 'APPROVED',
-            active: status === 'ACTIVE',
             updatedAt: serverTimestamp()
           }, { merge: true });
         } catch (syncErr) {
@@ -466,14 +392,6 @@ export const TeachersPage: React.FC = () => {
     try {
       await deleteDoc(doc(db, 'teachers', teacher.teacherId));
       if (teacher.userId) {
-        const tSchool = (teacher.schoolId || adminSchool || '').trim().toLowerCase();
-        if (tSchool) {
-          try {
-            await deleteDoc(doc(db, 'memberships', `${tSchool}_${teacher.userId}`));
-          } catch (mErr) {
-            console.warn('Teacher membership delete notice:', mErr);
-          }
-        }
         try {
           await deleteDoc(doc(db, 'users', teacher.userId));
         } catch (uErr) {
@@ -991,10 +909,7 @@ export const TeachersPage: React.FC = () => {
               <Button
                 variant="primary"
                 onClick={() => {
-                  const inviteUrl = buildHashRouteUrl(
-                    window.location.origin,
-                    `/activate?invite=${encodeURIComponent(createdInvite.id)}`
-                  );
+                  const inviteUrl = `${window.location.origin}/?invite=${createdInvite.id}`;
                   navigator.clipboard.writeText(inviteUrl);
                   alert('Full invitation activation link copied to clipboard!');
                 }}

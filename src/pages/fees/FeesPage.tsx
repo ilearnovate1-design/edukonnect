@@ -17,7 +17,6 @@ import { FeeStatementModal } from '../../components/fees/FeeStatementModal';
 import { printDocumentElement } from '../../utils/documentGenerator';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
-import { useQueryTab } from '../../routes/useQueryTab';
 import { 
   formatNaira, formatDate, formatTime, generateReceiptNumber, logAudit 
 } from '../../utils/formatters';
@@ -47,11 +46,7 @@ export const FeesPage: React.FC = () => {
   const { role, isSuperAdmin, isAtLeastAdmin, currentUser } = useAuth();
   const { settings, schoolId } = useSchool();
 
-  const [activeTab, setActiveTab] = useQueryTab<'payments' | 'structures' | 'statements' | 'debtors'>(
-    'tab',
-    'payments',
-    ['payments', 'structures', 'statements', 'debtors']
-  );
+  const [activeTab, setActiveTab] = useState<'payments' | 'structures' | 'statements' | 'debtors'>('payments');
 
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [students, setStudents] = useState<Student[]>([]);

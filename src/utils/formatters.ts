@@ -157,10 +157,7 @@ export const parseFirebaseError = (error: any): string => {
   if (message.includes('auth/weak-password')) {
     return 'Password must be at least 6 characters long.';
   }
-  if (
-    message.includes('permission-denied') ||
-    message.includes('Missing or insufficient permissions')
-  ) {
+  if (message.includes('permission-denied')) {
     return 'Permission denied. You do not have authorization to perform this action.';
   }
   if (message.includes('network-request-failed')) {

@@ -12,7 +12,6 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { AccountInvitation, SchoolMembership, AppUser, Teacher, Parent, Student } from '../types';
-import { sanitizeFirestoreData } from './gradingProfileService';
 
 /**
  * Generate a secure, unique, human-friendly invitation code.
@@ -366,7 +365,6 @@ export async function acceptAndActivateInvitation(params: {
     schoolName: invitation.schoolName,
     role: invitation.role,
     status: 'ACTIVE',
-    invitationId: invitation.id,
     activatedAt: serverTimestamp(),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -454,27 +452,23 @@ export async function acceptAndActivateInvitation(params: {
         const sSnap = await getDoc(sRef);
         if (sSnap.exists()) {
           const sData = sSnap.data() as Student;
-          const existingIds = sData.parentIds || [];
-          const existingEmails = sData.parentEmails || [];
-          if (!existingIds.includes(linkedParentId) || !existingEmails.includes(cleanEmail)) {
-            const updatedIds = Array.from(new Set([...existingIds, linkedParentId]));
-            const updatedEmails = Array.from(new Set([...existingEmails, cleanEmail]));
-            batch.update(sRef, {
-              parentIds: updatedIds,
-              parentEmails: updatedEmails,
-              updatedAt: serverTimestamp(),
-            });
-          }
+          const updatedIds = Array.from(new Set([...(sData.parentIds || []), linkedParentId]));
+          const updatedEmails = Array.from(new Set([...(sData.parentEmails || []), cleanEmail]));
+          batch.update(sRef, {
+            parentIds: updatedIds,
+            parentEmails: updatedEmails,
+            updatedAt: serverTimestamp(),
+          });
         }
       }
     }
   }
 
-  batch.set(membershipRef, sanitizeFirestoreData(membership));
+  batch.set(membershipRef, membership);
 
   // 4. Update the user document to lock to target school and role
   const userRef = doc(db, 'users', userUid);
-  const updatedUserDoc: Partial<AppUser> = sanitizeFirestoreData({
+  const updatedUserDoc: Partial<AppUser> = {
     uid: userUid,
     email: cleanEmail,
     displayName: displayName || (invitation.role === 'TEACHER' 
@@ -489,7 +483,7 @@ export async function acceptAndActivateInvitation(params: {
     parentId: linkedParentId,
     assignedClassIds: invitation.teacherData?.assignedClassIds || [],
     updatedAt: serverTimestamp(),
-  });
+  };
 
   batch.set(userRef, updatedUserDoc, { merge: true });
 

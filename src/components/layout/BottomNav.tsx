@@ -1,5 +1,4 @@
 import React from 'react';
-import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   CalendarCheck2, 
@@ -8,11 +7,10 @@ import {
   ClipboardList 
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { getPathForPage } from '../../routes/routes';
 
 interface BottomNavProps {
-  currentPage?: string;
-  onNavigate?: (page: string) => void;
+  currentPage: string;
+  onNavigate: (page: string) => void;
 }
 
 export const BottomNav: React.FC<BottomNavProps> = ({ currentPage, onNavigate }) => {
@@ -48,30 +46,20 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentPage, onNavigate })
     <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200/90 shadow-lg px-2 pt-1 pb-[max(env(safe-area-inset-bottom),4px)] flex items-center justify-around">
       {items.map((item) => {
         const Icon = item.icon;
-        const targetPath = getPathForPage(item.id);
+        const isActive = currentPage === item.id;
         return (
-          <NavLink
+          <button
             key={item.id}
             id={`bottom-nav-${item.id}`}
-            to={targetPath}
-            onClick={() => onNavigate?.(item.id)}
-            className={({ isActive }) => {
-              const active = isActive || currentPage === item.id;
-              return `flex flex-col items-center justify-center py-1.5 px-3 min-h-[48px] rounded-lg transition-colors ${
-                active ? 'text-emerald-700 font-semibold' : 'text-slate-500 hover:text-slate-800'
-              }`;
-            }}
+            type="button"
+            onClick={() => onNavigate(item.id)}
+            className={`flex flex-col items-center justify-center py-1.5 px-3 min-h-[48px] rounded-lg transition-colors ${
+              isActive ? 'text-emerald-700 font-semibold' : 'text-slate-500 hover:text-slate-800'
+            }`}
           >
-            {({ isActive }) => {
-              const active = isActive || currentPage === item.id;
-              return (
-                <>
-                  <Icon className={`w-5 h-5 ${active ? 'text-emerald-700' : 'text-slate-400'}`} />
-                  <span className="text-[10px] mt-1">{item.label}</span>
-                </>
-              );
-            }}
-          </NavLink>
+            <Icon className={`w-5 h-5 ${isActive ? 'text-emerald-700' : 'text-slate-400'}`} />
+            <span className="text-[10px] mt-1">{item.label}</span>
+          </button>
         );
       })}
     </div>

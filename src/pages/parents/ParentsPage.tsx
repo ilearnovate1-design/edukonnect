@@ -17,9 +17,6 @@ import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
 import { createParentInvitation, getSchoolInvitations, revokeInvitation } from '../../services/invitationService';
-import { sanitizeFirestoreData } from '../../services/gradingProfileService';
-import { useQueryTab } from '../../routes/useQueryTab';
-import { buildHashRouteUrl } from '../../routes/routes';
 
 export const ParentsPage: React.FC = () => {
   const { role, currentUser, appUser, isSuperAdmin } = useAuth();
@@ -29,11 +26,7 @@ export const ParentsPage: React.FC = () => {
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useQueryTab<'parents' | 'invitations'>(
-    'tab',
-    'parents',
-    ['parents', 'invitations']
-  );
+  const [activeTab, setActiveTab] = useState<'parents' | 'invitations'>('parents');
 
   // Add/Edit Parent Modal
   const [showModal, setShowModal] = useState(false);
@@ -64,9 +57,7 @@ export const ParentsPage: React.FC = () => {
   const [copiedCode, setCopiedCode] = useState(false);
 
   const matchesTenant = (itemSchoolId?: string) => {
-    const active = schoolId?.trim().toLowerCase();
-    const item = itemSchoolId?.trim().toLowerCase();
-    return item ? item === active : (active === 'default' || !active);
+    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
   };
 
   const generatePassword = () => {
@@ -95,7 +86,6 @@ export const ParentsPage: React.FC = () => {
         const item = d.data() as Student;
         if (matchesTenant(item.schoolId)) sList.push(item);
       });
-      setStudents(sList);
       if (schoolId) {
         try {
           const invList = await getSchoolInvitations(schoolId);
@@ -279,34 +269,10 @@ export const ParentsPage: React.FC = () => {
         }
       }
 
-      // If user ID was not assigned yet, check memberships or school users with this email
+      // If user ID was not assigned yet, check if a user document exists with this email
       if (!resolvedUserId) {
         try {
-          const mSnap = await getDocs(
-            query(
-              collection(db, 'memberships'),
-              where('schoolId', '==', normalizedSchoolId),
-              where('userEmail', '==', normalizedEmail)
-            )
-          );
-          if (!mSnap.empty) {
-            resolvedUserId = (mSnap.docs[0].data() as any).userId;
-            if (resolvedUserId) payload.userId = resolvedUserId;
-          }
-        } catch (mLookupErr) {
-          console.warn('Membership lookup notice:', mLookupErr);
-        }
-      }
-
-      if (!resolvedUserId) {
-        try {
-          const uSnap = await getDocs(
-            query(
-              collection(db, 'users'),
-              where('schoolId', '==', normalizedSchoolId),
-              where('email', '==', normalizedEmail)
-            )
-          );
+          const uSnap = await getDocs(query(collection(db, 'users'), where('email', '==', normalizedEmail)));
           if (!uSnap.empty) {
             resolvedUserId = uSnap.docs[0].id;
             payload.userId = resolvedUserId;
@@ -316,31 +282,8 @@ export const ParentsPage: React.FC = () => {
         }
       }
 
-      // Keep membership & user doc securely in sync with verified schoolId, role, and parentId
+      // Keep user doc securely in sync with verified schoolId, role, and parentId
       if (resolvedUserId) {
-        try {
-          await setDoc(
-            doc(db, 'memberships', `${normalizedSchoolId}_${resolvedUserId}`),
-            sanitizeFirestoreData({
-              id: `${normalizedSchoolId}_${resolvedUserId}`,
-              userId: resolvedUserId,
-              userEmail: normalizedEmail,
-              schoolId: normalizedSchoolId,
-              schoolName: settings.schoolName || 'EduKonnect School',
-              role: 'PARENT',
-              status: 'ACTIVE',
-              parentId: pId,
-              linkedStudentIds: selectedChildIds,
-              activatedAt: serverTimestamp(),
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            }),
-            { merge: true }
-          );
-        } catch (memSyncErr) {
-          console.warn('Parent membership sync notice:', memSyncErr);
-        }
-
         try {
           await setDoc(doc(db, 'users', resolvedUserId), {
             schoolId: normalizedSchoolId,
@@ -348,7 +291,6 @@ export const ParentsPage: React.FC = () => {
             parentId: pId,
             displayName: `${firstName.trim()} ${lastName.trim()}`,
             approvalStatus: 'APPROVED',
-            active: true,
             updatedAt: serverTimestamp()
           }, { merge: true });
         } catch (syncErr) {
@@ -872,10 +814,7 @@ export const ParentsPage: React.FC = () => {
               <Button
                 variant="primary"
                 onClick={() => {
-                  const inviteUrl = buildHashRouteUrl(
-                    window.location.origin,
-                    `/activate?invite=${encodeURIComponent(createdInvite.id)}`
-                  );
+                  const inviteUrl = `${window.location.origin}/?invite=${createdInvite.id}`;
                   navigator.clipboard.writeText(inviteUrl);
                   alert('Full invitation activation link copied to clipboard!');
                 }}

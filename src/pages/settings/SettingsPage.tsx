@@ -41,22 +41,13 @@ import {
 import { DEFAULT_REPORT_TEMPLATE, DEFAULT_AFFECTIVE_TRAITS, deleteSchool } from '../../services/schoolService';
 import { runTenantDryRunVerification, DryRunReport } from '../../services/tenantMigrationService';
 import { GradingSettingsTab } from '../../components/settings/GradingSettingsTab';
-import { useQueryTab } from '../../routes/useQueryTab';
 
 export const SettingsPage: React.FC = () => {
   const { settings, updateSettings, schoolId } = useSchool();
   const { currentUser, role, isAtLeastAdmin, updateUserPassword, resetPassword } = useAuth();
 
-  // Active tab synchronized with URL ?tab= query param
-  const [activeTab, setActiveTab] = useQueryTab<
-    'grading_settings' | 'report_template' | 'general_profile' | 'database' | 'security'
-  >('tab', 'grading_settings', [
-    'grading_settings',
-    'report_template',
-    'general_profile',
-    'database',
-    'security',
-  ]);
+  // Active tab: teachers default to 'report_template', admins can switch
+  const [activeTab, setActiveTab] = useState<'grading_settings' | 'report_template' | 'general_profile' | 'database' | 'security'>('grading_settings');
 
   // Security state
   const [currentPassword, setCurrentPassword] = useState('');

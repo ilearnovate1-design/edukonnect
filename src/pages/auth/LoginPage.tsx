@@ -1,5 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { Button } from '../../components/common/Button';
@@ -22,30 +21,13 @@ import { parseFirebaseError } from '../../utils/formatters';
 import { registerNewSchoolAndOwner } from '../../services/schoolService';
 import { getInvitationByCode, acceptAndActivateInvitation } from '../../services/invitationService';
 import { AccountInvitation } from '../../types';
-import { AUTH_ROUTES } from '../../routes/routes';
 
-type AuthMode = 'SIGN_IN' | 'REGISTER_SCHOOL' | 'ACTIVATE_INVITE';
-
-export const LoginPage: React.FC<{
-  onSetupRequested?: () => void;
-  initialMode?: AuthMode;
-}> = ({ onSetupRequested, initialMode = 'SIGN_IN' }) => {
+export const LoginPage: React.FC<{ onSetupRequested?: () => void }> = ({ onSetupRequested }) => {
   const { login, signup, resetPassword, currentUser, refreshUserProfile } = useAuth();
   const { settings, reloadSettings } = useSchool();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const lastVerifiedInviteParamRef = useRef<string>('');
-
-  const resolveModeFromPath = (pathname: string): AuthMode => {
-    if (pathname === AUTH_ROUTES.registerSchool) return 'REGISTER_SCHOOL';
-    if (pathname === AUTH_ROUTES.activate) return 'ACTIVATE_INVITE';
-    if (pathname === AUTH_ROUTES.login) return 'SIGN_IN';
-    return initialMode;
-  };
 
   // Mode: 'SIGN_IN' | 'REGISTER_SCHOOL' | 'ACTIVATE_INVITE'
-  const [mode, setMode] = useState<AuthMode>(() => resolveModeFromPath(location.pathname));
+  const [mode, setMode] = useState<'SIGN_IN' | 'REGISTER_SCHOOL' | 'ACTIVATE_INVITE'>('SIGN_IN');
 
   // Sign In Form State
   const [email, setEmail] = useState('');
@@ -79,54 +61,22 @@ export const LoginPage: React.FC<{
   const [invitePassword, setInvitePassword] = useState('');
   const [confirmInvitePassword, setConfirmInvitePassword] = useState('');
 
-  // Keep mode synchronized with URL path (supports browser Back/Forward)
-  useEffect(() => {
-    const nextMode = resolveModeFromPath(location.pathname);
-    setMode(nextMode);
-  }, [location.pathname, initialMode]);
-
   // Check URL parameters for ?invite=CODE
   useEffect(() => {
-    const codeParam = searchParams.get('invite');
-    if (codeParam) {
-      const cleanCode = codeParam.toUpperCase().trim();
-      setInviteCode(cleanCode);
-      setMode('ACTIVATE_INVITE');
-      if (location.pathname !== AUTH_ROUTES.activate) {
-        navigate(`${AUTH_ROUTES.activate}?invite=${encodeURIComponent(cleanCode)}`, { replace: true });
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const codeParam = urlParams.get('invite');
+      if (codeParam) {
+        setInviteCode(codeParam.toUpperCase().trim());
+        setMode('ACTIVATE_INVITE');
+        verifyInviteCode(codeParam.toUpperCase().trim());
       }
-      if (lastVerifiedInviteParamRef.current !== cleanCode) {
-        lastVerifiedInviteParamRef.current = cleanCode;
-        verifyInviteCode(cleanCode);
-      }
-    }
-  }, [searchParams, location.pathname, navigate]);
+    } catch (e) {}
+  }, []);
 
   const resetMessages = () => {
     setErrorMessage('');
     setSuccessMessage('');
-  };
-
-  const switchMode = (nextMode: AuthMode) => {
-    setMode(nextMode);
-    resetMessages();
-    if (nextMode === 'REGISTER_SCHOOL') {
-      setRegStep(1);
-      if (location.pathname !== AUTH_ROUTES.registerSchool) {
-        navigate(AUTH_ROUTES.registerSchool);
-      }
-    } else if (nextMode === 'ACTIVATE_INVITE') {
-      const targetUrl = inviteCode.trim()
-        ? `${AUTH_ROUTES.activate}?invite=${encodeURIComponent(inviteCode.trim())}`
-        : AUTH_ROUTES.activate;
-      if (`${location.pathname}${location.search}` !== targetUrl) {
-        navigate(targetUrl);
-      }
-    } else {
-      if (location.pathname !== AUTH_ROUTES.login) {
-        navigate(AUTH_ROUTES.login);
-      }
-    }
   };
 
   /* -------------------------------------------------------------
@@ -351,7 +301,10 @@ export const LoginPage: React.FC<{
             <button
               type="button"
               id="action-sign-in-tab"
-              onClick={() => switchMode('SIGN_IN')}
+              onClick={() => {
+                setMode('SIGN_IN');
+                resetMessages();
+              }}
               className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 mode === 'SIGN_IN'
                   ? 'bg-white text-emerald-800 shadow-2xs'
@@ -364,7 +317,11 @@ export const LoginPage: React.FC<{
             <button
               type="button"
               id="action-register-school-tab"
-              onClick={() => switchMode('REGISTER_SCHOOL')}
+              onClick={() => {
+                setMode('REGISTER_SCHOOL');
+                resetMessages();
+                setRegStep(1);
+              }}
               className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 mode === 'REGISTER_SCHOOL'
                   ? 'bg-white text-emerald-800 shadow-2xs'
@@ -453,7 +410,10 @@ export const LoginPage: React.FC<{
                 </p>
                 <button
                   type="button"
-                  onClick={() => switchMode('ACTIVATE_INVITE')}
+                  onClick={() => {
+                    setMode('ACTIVATE_INVITE');
+                    resetMessages();
+                  }}
                   className="text-xs font-bold text-emerald-700 hover:text-emerald-800 inline-flex items-center gap-1 cursor-pointer"
                 >
                   <KeyRound className="w-3.5 h-3.5" />
@@ -611,8 +571,8 @@ export const LoginPage: React.FC<{
               <div className="text-center pt-2">
                 <button
                   type="button"
-                  onClick={() => switchMode('SIGN_IN')}
-                  className="text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
+                  onClick={() => setMode('SIGN_IN')}
+                  className="text-xs text-slate-500 hover:text-slate-800"
                 >
                   Already have an account? Sign In
                 </button>
@@ -717,8 +677,8 @@ export const LoginPage: React.FC<{
               <div className="text-center pt-2">
                 <button
                   type="button"
-                  onClick={() => switchMode('SIGN_IN')}
-                  className="text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
+                  onClick={() => setMode('SIGN_IN')}
+                  className="text-xs text-slate-500 hover:text-slate-800"
                 >
                   Return to Sign In
                 </button>
