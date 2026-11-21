@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Navbar } from './Navbar';
 import { Sidebar } from './Sidebar';
 import { BottomNav } from './BottomNav';
+import { useSchool } from '../../contexts/SchoolContext';
+import { getPageIdFromPath, getPageTitleFromPath } from '../../routes/routes';
 
 interface AppShellProps {
-  currentPage: string;
+  currentPage?: string;
   onNavigate: (page: string) => void;
   children: React.ReactNode;
 }
@@ -15,24 +18,16 @@ export const AppShell: React.FC<AppShellProps> = ({
   children,
 }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const location = useLocation();
+  const { settings } = useSchool();
 
-  const getPageTitle = (page: string) => {
-    switch (page) {
-      case 'dashboard': return 'Dashboard';
-      case 'students': return 'Students';
-      case 'parents': return 'Parents';
-      case 'teachers': return 'Teachers';
-      case 'classes': return 'Classes & Subjects';
-      case 'attendance': return 'Daily Attendance';
-      case 'fees': return 'Fees & Payments';
-      case 'results': return 'Examination Results';
-      case 'assignments': return 'Assignments';
-      case 'announcements': return 'Announcements';
-      case 'settings': return 'School Settings';
-      case 'audit': return 'Audit Logs & Security';
-      default: return 'School Portal';
-    }
-  };
+  const resolvedPage = currentPage || getPageIdFromPath(location.pathname);
+  const pageTitle = getPageTitleFromPath(location.pathname);
+
+  useEffect(() => {
+    const schoolTitle = settings.schoolName || 'EduKonnect Portal';
+    document.title = `${pageTitle} | ${schoolTitle}`;
+  }, [pageTitle, settings.schoolName]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col antialiased">
@@ -40,7 +35,7 @@ export const AppShell: React.FC<AppShellProps> = ({
       <Sidebar
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
-        currentPage={currentPage}
+        currentPage={resolvedPage}
         onNavigate={onNavigate}
       />
 
@@ -49,7 +44,7 @@ export const AppShell: React.FC<AppShellProps> = ({
         <Navbar
           isSidebarOpen={isSidebarOpen}
           onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
-          currentPageTitle={getPageTitle(currentPage)}
+          currentPageTitle={pageTitle}
           onNavigate={onNavigate}
         />
 
@@ -59,7 +54,7 @@ export const AppShell: React.FC<AppShellProps> = ({
       </div>
 
       {/* Mobile Bottom Navigation */}
-      <BottomNav currentPage={currentPage} onNavigate={onNavigate} />
+      <BottomNav currentPage={resolvedPage} onNavigate={onNavigate} />
     </div>
   );
 };

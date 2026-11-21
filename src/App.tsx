@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Routes, Route, Navigate, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import { useSchool } from './contexts/SchoolContext';
 import { AppShell } from './components/layout/AppShell';
@@ -31,6 +32,14 @@ import { Student, Result, SchoolClass } from './types';
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
 import { db, testFirestoreConnection } from './services/firebase';
 import { acceptAndActivateInvitation } from './services/invitationService';
+import {
+  APP_ROUTES,
+  AUTH_ROUTES,
+  getPageIdFromPath,
+  getPageTitleFromPath,
+  getPathForPage,
+  isAuthPath,
+} from './routes/routes';
 
 export default function App() {
   const { 
@@ -49,13 +58,21 @@ export default function App() {
     refreshUserProfile
   } = useAuth();
   const { settings, loading: schoolLoading, isConfigured, reloadSettings } = useSchool();
+  const location = useLocation();
+  const navigate = useNavigate();
+
   const [showSchoolSelector, setShowSchoolSelector] = useState(false);
   const [activationCode, setActivationCode] = useState('');
   const [activatingCode, setActivatingCode] = useState(false);
   const [activationError, setActivationError] = useState('');
   const [activationSuccess, setActivationSuccess] = useState('');
 
-  const [currentPage, setCurrentPage] = useState<string>('dashboard');
+  const handleNavigate = useCallback(
+    (pageOrPath: string) => {
+      navigate(getPathForPage(pageOrPath));
+    },
+    [navigate]
+  );
 
   // Prevent endless loading screen: force ready after 2.5s
   const [forceReady, setForceReady] = useState(false);
@@ -63,6 +80,22 @@ export default function App() {
     const timer = setTimeout(() => setForceReady(true), 2500);
     return () => clearTimeout(timer);
   }, []);
+
+  // Pre-fill invitation code if user lands with ?invite= while missing school membership
+  useEffect(() => {
+    const inviteParam = new URLSearchParams(location.search).get('invite');
+    if (inviteParam) {
+      setActivationCode(inviteParam.toUpperCase().trim());
+    }
+  }, [location.search]);
+
+  // Keep document.title synchronized on auth / gate views (AppShell handles authenticated pages)
+  useEffect(() => {
+    if (!currentUser || (appUser?.approvalStatus !== 'APPROVED' && !isSuperAdmin)) {
+      const title = getPageTitleFromPath(location.pathname);
+      document.title = `${title} | ${settings.schoolName || 'EduKonnect Portal'}`;
+    }
+  }, [currentUser, appUser?.approvalStatus, isSuperAdmin, location.pathname, settings.schoolName]);
 
   // Global Report Card Viewer state
   const [reportStudent, setReportStudent] = useState<Student | null>(null);
@@ -132,19 +165,53 @@ export default function App() {
     );
   }
 
-  // Not logged in: Show Login Screen
+  // Not logged in: URL-driven Auth & Public Onboarding Routes
   if (!currentUser) {
-    if (currentPage === 'setup') {
-      return (
-        <InitialSetupPage
-          onComplete={() => setCurrentPage('dashboard')}
-        />
-      );
+    const hasInviteParam = new URLSearchParams(location.search).get('invite');
+    if (location.pathname === '/' && hasInviteParam) {
+      return <Navigate to={`${AUTH_ROUTES.activate}${location.search}`} replace />;
     }
+
     return (
-      <LoginPage
-        onSetupRequested={() => setCurrentPage('setup')}
-      />
+      <Routes>
+        <Route
+          path={AUTH_ROUTES.login}
+          element={
+            <LoginPage
+              initialMode="SIGN_IN"
+              onSetupRequested={() => navigate(APP_ROUTES.setup)}
+            />
+          }
+        />
+        <Route
+          path={AUTH_ROUTES.registerSchool}
+          element={
+            <LoginPage
+              initialMode="REGISTER_SCHOOL"
+              onSetupRequested={() => navigate(APP_ROUTES.setup)}
+            />
+          }
+        />
+        <Route
+          path={AUTH_ROUTES.activate}
+          element={
+            <LoginPage
+              initialMode="ACTIVATE_INVITE"
+              onSetupRequested={() => navigate(APP_ROUTES.setup)}
+            />
+          }
+        />
+        <Route
+          path={APP_ROUTES.setup}
+          element={
+            <InitialSetupPage
+              onComplete={() => navigate(APP_ROUTES.dashboard, { replace: true })}
+            />
+          }
+        />
+        <Route path="/" element={<Navigate to={AUTH_ROUTES.login} replace />} />
+        <Route path="*" element={<Navigate to={AUTH_ROUTES.login} state={{ from: location }} replace />} />
+      </Routes>
     );
   }
 
@@ -160,111 +227,140 @@ export default function App() {
   // Logged in: Check Approval Status
   if (appUser?.approvalStatus === 'REJECTED') {
     return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 text-center">
-        <div className="max-w-md bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
-          <h2 className="text-xl font-bold text-slate-900 mb-2">Access Denied</h2>
-          <p className="text-slate-500 mb-6">Your registration request has been declined. Please contact support if you believe this is an error.</p>
-          <Button variant="outline" onClick={logout}>Sign Out</Button>
-        </div>
-      </div>
+      <Routes>
+        <Route
+          path={AUTH_ROUTES.accessDenied}
+          element={
+            <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 text-center">
+              <div className="max-w-md bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
+                <h2 className="text-xl font-bold text-slate-900 mb-2">Access Denied</h2>
+                <p className="text-slate-500 mb-6">Your registration request has been declined. Please contact support if you believe this is an error.</p>
+                <Button variant="outline" onClick={logout}>Sign Out</Button>
+              </div>
+            </div>
+          }
+        />
+        <Route path="*" element={<Navigate to={AUTH_ROUTES.accessDenied} replace />} />
+      </Routes>
     );
   }
 
   if (appUser?.approvalStatus === 'PENDING_SETUP') {
     return (
-      <InitialSetupPage
-        onComplete={() => setCurrentPage('dashboard')}
-      />
+      <Routes>
+        <Route
+          path={APP_ROUTES.setup}
+          element={
+            <InitialSetupPage
+              onComplete={() => navigate(APP_ROUTES.dashboard, { replace: true })}
+            />
+          }
+        />
+        <Route path="*" element={<Navigate to={APP_ROUTES.setup} replace />} />
+      </Routes>
     );
   }
 
   if (appUser?.approvalStatus === 'PENDING_APPROVAL') {
-    return <AwaitingApprovalPage />;
+    return (
+      <Routes>
+        <Route path={AUTH_ROUTES.awaitingApproval} element={<AwaitingApprovalPage />} />
+        <Route path="*" element={<Navigate to={AUTH_ROUTES.awaitingApproval} replace />} />
+      </Routes>
+    );
   }
 
   // Authoritative School Membership Check
   // Teachers, Parents and Staff must belong to a verified school and not fall back to default
   if (!isSuperAdmin && (!appUser?.schoolId || !appUser?.schoolId.trim())) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white p-6 sm:p-8 rounded-2xl shadow-sm border border-slate-200 text-center">
-          <div className="w-12 h-12 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto mb-4">
-            <KeyRound className="w-6 h-6" />
-          </div>
-          <h2 className="text-xl font-bold text-slate-900 mb-1">School Membership Required</h2>
-          <p className="text-slate-600 text-xs sm:text-sm mb-4 leading-relaxed">
-            Your account ({appUser?.email}) is not yet associated with an authorized school institution.
-          </p>
+      <Routes>
+        <Route
+          path={AUTH_ROUTES.membershipRequired}
+          element={
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+              <div className="max-w-md w-full bg-white p-6 sm:p-8 rounded-2xl shadow-sm border border-slate-200 text-center">
+                <div className="w-12 h-12 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto mb-4">
+                  <KeyRound className="w-6 h-6" />
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 mb-1">School Membership Required</h2>
+                <p className="text-slate-600 text-xs sm:text-sm mb-4 leading-relaxed">
+                  Your account ({appUser?.email}) is not yet associated with an authorized school institution.
+                </p>
 
-          {activationError && (
-            <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs text-left">
-              {activationError}
+                {activationError && (
+                  <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs text-left">
+                    {activationError}
+                  </div>
+                )}
+
+                {activationSuccess && (
+                  <div className="mb-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs text-left">
+                    {activationSuccess}
+                  </div>
+                )}
+
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (!activationCode.trim()) {
+                      setActivationError('Please enter your invitation code.');
+                      return;
+                    }
+                    if (!currentUser) return;
+                    setActivatingCode(true);
+                    setActivationError('');
+                    setActivationSuccess('');
+                    try {
+                      await acceptAndActivateInvitation({
+                        code: activationCode.trim().toUpperCase(),
+                        userUid: currentUser.uid,
+                        userEmail: currentUser.email || appUser?.email || '',
+                        displayName: currentUser.displayName || appUser?.displayName,
+                      });
+                      setActivationSuccess('Invitation activated! Loading school dashboard...');
+                      await reloadSettings();
+                      await refreshUserProfile();
+                    } catch (err: any) {
+                      setActivationError(err.message || 'Failed to activate invitation.');
+                    } finally {
+                      setActivatingCode(false);
+                    }
+                  }}
+                  className="space-y-3 mb-4 text-left"
+                >
+                  <Input
+                    id="recovery-activation-code"
+                    label="Enter School Invitation Code"
+                    placeholder="e.g. INV-ABCD-EFGH"
+                    value={activationCode}
+                    onChange={(e) => setActivationCode(e.target.value.toUpperCase())}
+                    required
+                    helperText="Enter the single-use invite code provided by your school administrator."
+                  />
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    className="w-full"
+                    isLoading={activatingCode}
+                    leftIcon={<CheckCircle2 className="w-4 h-4" />}
+                  >
+                    Activate & Enter School
+                  </Button>
+                </form>
+
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                  <span>Teachers & parents must be invited.</span>
+                  <Button variant="ghost" size="sm" onClick={logout}>
+                    Sign Out
+                  </Button>
+                </div>
+              </div>
             </div>
-          )}
-
-          {activationSuccess && (
-            <div className="mb-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs text-left">
-              {activationSuccess}
-            </div>
-          )}
-
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (!activationCode.trim()) {
-                setActivationError('Please enter your invitation code.');
-                return;
-              }
-              if (!currentUser) return;
-              setActivatingCode(true);
-              setActivationError('');
-              setActivationSuccess('');
-              try {
-                await acceptAndActivateInvitation({
-                  code: activationCode.trim().toUpperCase(),
-                  userUid: currentUser.uid,
-                  userEmail: currentUser.email || appUser?.email || '',
-                  displayName: currentUser.displayName || appUser?.displayName,
-                });
-                setActivationSuccess('Invitation activated! Loading school dashboard...');
-                await reloadSettings();
-                await refreshUserProfile();
-              } catch (err: any) {
-                setActivationError(err.message || 'Failed to activate invitation.');
-              } finally {
-                setActivatingCode(false);
-              }
-            }}
-            className="space-y-3 mb-4 text-left"
-          >
-            <Input
-              id="recovery-activation-code"
-              label="Enter School Invitation Code"
-              placeholder="e.g. INV-ABCD-EFGH"
-              value={activationCode}
-              onChange={(e) => setActivationCode(e.target.value.toUpperCase())}
-              required
-              helperText="Enter the single-use invite code provided by your school administrator."
-            />
-            <Button
-              type="submit"
-              variant="primary"
-              className="w-full"
-              isLoading={activatingCode}
-              leftIcon={<CheckCircle2 className="w-4 h-4" />}
-            >
-              Activate & Enter School
-            </Button>
-          </form>
-
-          <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-            <span>Teachers & parents must be invited.</span>
-            <Button variant="ghost" size="sm" onClick={logout}>
-              Sign Out
-            </Button>
-          </div>
-        </div>
-      </div>
+          }
+        />
+        <Route path="*" element={<Navigate to={AUTH_ROUTES.membershipRequired} replace />} />
+      </Routes>
     );
   }
 
@@ -277,174 +373,234 @@ export default function App() {
     );
   }
 
-  // Logged in: Render inside AppShell
+  // Determine safe post-login redirect target (supports deep links saved before login)
+  const rawFrom = (location.state as { from?: { pathname?: string; search?: string } } | null)?.from;
+  const postLoginTarget =
+    rawFrom?.pathname && rawFrom.pathname !== '/' && !isAuthPath(rawFrom.pathname)
+      ? `${rawFrom.pathname}${rawFrom.search || ''}`
+      : APP_ROUTES.dashboard;
+
+  const currentPageId = getPageIdFromPath(location.pathname);
+
+  // Logged in: Render inside AppShell with URL Routes
   return (
-    <AppShell currentPage={currentPage} onNavigate={setCurrentPage}>
-      {/* 1. Dashboard View */}
-      {currentPage === 'dashboard' && (
-        <>
-          {role === 'TEACHER' ? (
-            <TeacherDashboard onNavigate={setCurrentPage} />
-          ) : role === 'PARENT' ? (
-            <ParentDashboard
-              onNavigate={setCurrentPage}
-              onViewReportCard={handleViewReportCard}
-            />
-          ) : (
-            <AdminDashboard 
-              onNavigate={setCurrentPage} 
-              onOpenQuickAction={(action) => {
-                if (action === 'add-student') setCurrentPage('students');
-                if (action === 'record-payment') setCurrentPage('fees');
-                if (action === 'create-assignment') setCurrentPage('assignments');
-                if (action === 'new-announcement') setCurrentPage('announcements');
-              }}
-            />
-          )}
-        </>
-      )}
+    <AppShell currentPage={currentPageId} onNavigate={handleNavigate}>
+      <Routes>
+        {/* Root & Auth Path Redirects once signed in */}
+        <Route path="/" element={<Navigate to={postLoginTarget} replace />} />
+        <Route path={AUTH_ROUTES.login} element={<Navigate to={postLoginTarget} replace />} />
+        <Route path={AUTH_ROUTES.registerSchool} element={<Navigate to={postLoginTarget} replace />} />
+        <Route path={AUTH_ROUTES.activate} element={<Navigate to={postLoginTarget} replace />} />
+        <Route path={AUTH_ROUTES.awaitingApproval} element={<Navigate to={postLoginTarget} replace />} />
+        <Route path={AUTH_ROUTES.accessDenied} element={<Navigate to={postLoginTarget} replace />} />
+        <Route path={AUTH_ROUTES.membershipRequired} element={<Navigate to={postLoginTarget} replace />} />
 
-      {/* 2. Students Directory & Profile */}
-      {currentPage === 'students' && (
-        role === 'PARENT' ? (
-          <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
-            <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
-            <p className="text-xs text-slate-500 mt-1">Please view your children on the Home Dashboard.</p>
-          </div>
-        ) : (
-          <StudentsPage />
-        )
-      )}
-
-      {/* 3. Daily Attendance & Clock-In */}
-      {currentPage === 'attendance' && (
-        role === 'PARENT' ? (
-          <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
-            <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
-            <p className="text-xs text-slate-500 mt-1">Daily attendance management is restricted to staff.</p>
-          </div>
-        ) : (
-          <AttendancePage />
-        )
-      )}
-
-      {/* 4. School Fees & Bursary */}
-      {currentPage === 'fees' && (
-        <>
-          {role === 'PARENT' ? (
-            <ParentDashboard
-              onNavigate={setCurrentPage}
-              onViewReportCard={handleViewReportCard}
-            />
-          ) : isAtLeastAdmin ? (
-            <FeesPage />
-          ) : (
-            <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
-              <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
-              <p className="text-xs text-slate-500 mt-1">Financial records and bursary tariffs are restricted to school administrators.</p>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* 5. Terminal Examination Results & CA */}
-      {currentPage === 'results' && (
-        <>
-          {role === 'PARENT' ? (
-            <ParentDashboard
-              onNavigate={setCurrentPage}
-              onViewReportCard={handleViewReportCard}
-            />
-          ) : (
-            <ResultsPage />
-          )}
-        </>
-      )}
-
-      {/* 6. Homework & Assignments */}
-      {currentPage === 'assignments' && <AssignmentsPage />}
-
-      {/* 7. Class Arms & Grades */}
-      {currentPage === 'classes' && <ClassesPage />}
-
-      {/* 8. Teachers Directory (Admin Only) */}
-      {currentPage === 'teachers' && (
-        isAtLeastAdmin ? (
-          <TeachersPage />
-        ) : (
-          <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
-            <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
-            <p className="text-xs text-slate-500 mt-1">Staff employment directories are restricted to school administrators.</p>
-          </div>
-        )
-      )}
-
-      {/* 9. Parents Directory (Admin Only) */}
-      {currentPage === 'parents' && (
-        isAtLeastAdmin ? (
-          <ParentsPage />
-        ) : (
-          <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
-            <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
-            <p className="text-xs text-slate-500 mt-1">Guardian directories are restricted to school administrators.</p>
-          </div>
-        )
-      )}
-
-      {/* 10. Announcements & Bulletins */}
-      {currentPage === 'announcements' && <AnnouncementsPage />}
-
-      {/* 11. School Profile & Report Template Settings (Admin & Teacher) */}
-      {currentPage === 'settings' && (
-        isAtLeastAdmin || role === 'TEACHER' ? (
-          <SettingsPage />
-        ) : (
-          <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
-            <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
-            <p className="text-xs text-slate-500 mt-1">System settings and school configurations are restricted to staff and administrators.</p>
-          </div>
-        )
-      )}
-
-      {/* 12. Security Audit Logs (Admin Only) */}
-      {currentPage === 'audit' && (
-        isAtLeastAdmin ? (
-          <AuditLogsPage />
-        ) : (
-          <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
-            <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
-            <p className="text-xs text-slate-500 mt-1">Institutional security audit logs are restricted to school administrators.</p>
-          </div>
-        )
-      )}
-
-      {/* 13. Initial Setup wizard */}
-      {currentPage === 'setup' && (
-        <InitialSetupPage
-          onComplete={() => setCurrentPage('dashboard')}
+        {/* 1. Dashboard View */}
+        <Route
+          path={APP_ROUTES.dashboard}
+          element={
+            role === 'TEACHER' ? (
+              <TeacherDashboard onNavigate={handleNavigate} />
+            ) : role === 'PARENT' ? (
+              <ParentDashboard
+                onNavigate={handleNavigate}
+                onViewReportCard={handleViewReportCard}
+              />
+            ) : (
+              <AdminDashboard 
+                onNavigate={handleNavigate} 
+                onOpenQuickAction={(action) => {
+                  if (action === 'add-student') handleNavigate('students');
+                  if (action === 'record-payment') handleNavigate('fees');
+                  if (action === 'create-assignment') handleNavigate('assignments');
+                  if (action === 'new-announcement') handleNavigate('announcements');
+                }}
+              />
+            )
+          }
         />
-      )}
 
-      {/* 14. System Super Admin Dashboard */}
-      {currentPage === 'superadmin' && <SuperAdminPage />}
+        {/* 2. Students Directory & Profile */}
+        <Route
+          path={APP_ROUTES.students}
+          element={
+            role === 'PARENT' ? (
+              <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+                <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
+                <p className="text-xs text-slate-500 mt-1">Please view your children on the Home Dashboard.</p>
+              </div>
+            ) : (
+              <StudentsPage />
+            )
+          }
+        />
 
-      {/* 15. Platform Usage Monitoring */}
-      {currentPage === 'usage' && isSuperAdmin && <UsageMonitoringPage />}
-      {currentPage === 'usage' && !isSuperAdmin && (
-        <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
-          <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
-          <p className="text-xs text-slate-500 mt-1">Platform monitoring is restricted to system administrators.</p>
-        </div>
-      )}
+        {/* 3. Daily Attendance & Clock-In */}
+        <Route
+          path={APP_ROUTES.attendance}
+          element={
+            role === 'PARENT' ? (
+              <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+                <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
+                <p className="text-xs text-slate-500 mt-1">Daily attendance management is restricted to staff.</p>
+              </div>
+            ) : (
+              <AttendancePage />
+            )
+          }
+        />
 
-      {/* Unmatched Page Fallback */}
-      {!['dashboard', 'students', 'attendance', 'fees', 'results', 'assignments', 'classes', 'teachers', 'parents', 'announcements', 'settings', 'audit', 'setup', 'superadmin', 'usage'].includes(currentPage) && (
-        <div className="p-12 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
-          <h3 className="text-base font-bold text-slate-900">Page Not Found</h3>
-          <p className="text-xs text-slate-500 mt-1 mb-4">The requested view is not available.</p>
-          <Button variant="primary" size="sm" onClick={() => setCurrentPage('dashboard')}>Return to Dashboard</Button>
-        </div>
-      )}
+        {/* 4. School Fees & Bursary */}
+        <Route
+          path={APP_ROUTES.fees}
+          element={
+            role === 'PARENT' ? (
+              <ParentDashboard
+                onNavigate={handleNavigate}
+                onViewReportCard={handleViewReportCard}
+              />
+            ) : isAtLeastAdmin ? (
+              <FeesPage />
+            ) : (
+              <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+                <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
+                <p className="text-xs text-slate-500 mt-1">Financial records and bursary tariffs are restricted to school administrators.</p>
+              </div>
+            )
+          }
+        />
+
+        {/* 5. Terminal Examination Results & CA */}
+        <Route
+          path={APP_ROUTES.results}
+          element={
+            role === 'PARENT' ? (
+              <ParentDashboard
+                onNavigate={handleNavigate}
+                onViewReportCard={handleViewReportCard}
+              />
+            ) : (
+              <ResultsPage />
+            )
+          }
+        />
+
+        {/* 6. Homework & Assignments */}
+        <Route path={APP_ROUTES.assignments} element={<AssignmentsPage />} />
+
+        {/* 7. Class Arms & Grades */}
+        <Route path={APP_ROUTES.classes} element={<ClassesPage />} />
+
+        {/* 8. Teachers Directory (Admin Only) */}
+        <Route
+          path={APP_ROUTES.teachers}
+          element={
+            isAtLeastAdmin ? (
+              <TeachersPage />
+            ) : (
+              <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+                <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
+                <p className="text-xs text-slate-500 mt-1">Staff employment directories are restricted to school administrators.</p>
+              </div>
+            )
+          }
+        />
+
+        {/* 9. Parents Directory (Admin Only) */}
+        <Route
+          path={APP_ROUTES.parents}
+          element={
+            isAtLeastAdmin ? (
+              <ParentsPage />
+            ) : (
+              <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+                <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
+                <p className="text-xs text-slate-500 mt-1">Guardian directories are restricted to school administrators.</p>
+              </div>
+            )
+          }
+        />
+
+        {/* 10. Announcements & Bulletins */}
+        <Route path={APP_ROUTES.announcements} element={<AnnouncementsPage />} />
+
+        {/* 11. School Profile & Report Template Settings (Admin & Teacher) */}
+        <Route
+          path={APP_ROUTES.settings}
+          element={
+            isAtLeastAdmin || role === 'TEACHER' ? (
+              <SettingsPage />
+            ) : (
+              <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+                <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
+                <p className="text-xs text-slate-500 mt-1">System settings and school configurations are restricted to staff and administrators.</p>
+              </div>
+            )
+          }
+        />
+
+        {/* 12. Security Audit Logs (Admin Only) */}
+        <Route
+          path={APP_ROUTES.audit}
+          element={
+            isAtLeastAdmin ? (
+              <AuditLogsPage />
+            ) : (
+              <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+                <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
+                <p className="text-xs text-slate-500 mt-1">Institutional security audit logs are restricted to school administrators.</p>
+              </div>
+            )
+          }
+        />
+
+        {/* 13. Initial Setup wizard */}
+        <Route
+          path={APP_ROUTES.setup}
+          element={
+            <InitialSetupPage
+              onComplete={() => navigate(APP_ROUTES.dashboard)}
+            />
+          }
+        />
+
+        {/* 14. System Super Admin Dashboard */}
+        <Route path={APP_ROUTES.superadmin} element={<SuperAdminPage />} />
+
+        {/* 15. Platform Usage Monitoring */}
+        <Route
+          path={APP_ROUTES.usage}
+          element={
+            isSuperAdmin ? (
+              <UsageMonitoringPage />
+            ) : (
+              <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+                <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
+                <p className="text-xs text-slate-500 mt-1">Platform monitoring is restricted to system administrators.</p>
+              </div>
+            )
+          }
+        />
+
+        {/* 404 / Unmatched Route Fallback */}
+        <Route
+          path="*"
+          element={
+            <div className="p-12 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
+              <h3 className="text-base font-bold text-slate-900">Page Not Found</h3>
+              <p className="text-xs text-slate-500 mt-1 mb-4">
+                The requested URL (<span className="font-mono">{location.pathname}</span>) is not available.
+              </p>
+              <Link
+                to={APP_ROUTES.dashboard}
+                className="inline-flex items-center justify-center px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 transition-colors"
+              >
+                Return to Dashboard
+              </Link>
+            </div>
+          }
+        />
+      </Routes>
 
       {/* Global Terminal Report Card Modal */}
       <ReportCardModal

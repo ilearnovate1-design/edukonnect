@@ -11,6 +11,7 @@ import { Modal } from '../../components/common/Modal';
 import { formatDate, formatTime } from '../../utils/formatters';
 import { ShieldCheck, Search, Filter, Clock, Trash2, AlertTriangle, Users, CheckCircle, RefreshCw, Wrench } from 'lucide-react';
 import { auditTeacherAndParentAccounts, executeApprovedAccountRepair, TenantAccountAuditReport } from '../../services/tenantDiagnosticService';
+import { useQueryTab } from '../../routes/useQueryTab';
 
 export const AuditLogsPage: React.FC = () => {
   const { isAtLeastAdmin, isSuperAdmin, currentUser } = useAuth();
@@ -24,7 +25,11 @@ export const AuditLogsPage: React.FC = () => {
   const [purgeError, setPurgeError] = useState('');
 
   // Tenant Account Isolation Diagnostics state
-  const [activeTab, setActiveTab] = useState<'logs' | 'isolation_diagnostics'>('logs');
+  const [activeTab, setActiveTab] = useQueryTab<'logs' | 'isolation_diagnostics'>(
+    'tab',
+    'logs',
+    ['logs', 'isolation_diagnostics']
+  );
   const [diagnosticReport, setDiagnosticReport] = useState<TenantAccountAuditReport | null>(null);
   const [diagnosticLoading, setDiagnosticLoading] = useState(false);
   const [isRepairing, setIsRepairing] = useState(false);

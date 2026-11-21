@@ -18,6 +18,7 @@ import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
 import { createParentInvitation, getSchoolInvitations, revokeInvitation } from '../../services/invitationService';
 import { sanitizeFirestoreData } from '../../services/gradingProfileService';
+import { useQueryTab } from '../../routes/useQueryTab';
 
 export const ParentsPage: React.FC = () => {
   const { role, currentUser, appUser, isSuperAdmin } = useAuth();
@@ -27,7 +28,11 @@ export const ParentsPage: React.FC = () => {
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'parents' | 'invitations'>('parents');
+  const [activeTab, setActiveTab] = useQueryTab<'parents' | 'invitations'>(
+    'tab',
+    'parents',
+    ['parents', 'invitations']
+  );
 
   // Add/Edit Parent Modal
   const [showModal, setShowModal] = useState(false);
@@ -866,7 +871,7 @@ export const ParentsPage: React.FC = () => {
               <Button
                 variant="primary"
                 onClick={() => {
-                  const inviteUrl = `${window.location.origin}/?invite=${createdInvite.id}`;
+                  const inviteUrl = `${window.location.origin}/activate?invite=${createdInvite.id}`;
                   navigator.clipboard.writeText(inviteUrl);
                   alert('Full invitation activation link copied to clipboard!');
                 }}

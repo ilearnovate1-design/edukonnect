@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { 
   Menu, X, Bell, LogOut, User, GraduationCap, ChevronDown, ShieldCheck,
   Building2, Check, ArrowRight
@@ -7,6 +8,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { Badge } from '../common/Badge';
 import { Modal } from '../common/Modal';
+import { APP_ROUTES } from '../../routes/routes';
 
 interface NavbarProps {
   onToggleSidebar: () => void;
@@ -73,7 +75,10 @@ export const Navbar: React.FC<NavbarProps> = ({
             {isSidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
 
-          <div className="flex items-center gap-2.5">
+          <Link
+            to={APP_ROUTES.dashboard}
+            className="flex items-center gap-2.5 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600/30"
+          >
             <div className="w-9 h-9 rounded-lg bg-emerald-700 text-white flex items-center justify-center font-bold text-base shadow-xs">
               {settings.logoUrl ? (
                 <img src={settings.logoUrl} alt="Logo" className="w-9 h-9 rounded-lg object-cover" />
@@ -94,7 +99,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {currentPageTitle}
               </h1>
             </div>
-          </div>
+          </Link>
         </div>
 
         {/* Right: Notifications & User profile */}
@@ -125,15 +130,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <span className="text-xs font-semibold text-slate-800 uppercase tracking-wider">
                     Notifications
                   </span>
-                  <button 
-                    onClick={() => {
-                      setShowNotifications(false);
-                      onNavigate('announcements');
-                    }}
+                  <Link
+                    to={APP_ROUTES.announcements}
+                    onClick={() => setShowNotifications(false)}
                     className="text-xs text-emerald-700 hover:underline font-medium"
                   >
                     View All Announcements
-                  </button>
+                  </Link>
                 </div>
                 {notifications.length === 0 ? (
                   <div className="py-6 text-center text-xs text-slate-500">
@@ -233,17 +236,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 )}
 
                 {appUser?.role === 'ADMIN' && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowUserMenu(false);
-                      onNavigate('settings');
-                    }}
+                  <Link
+                    to={APP_ROUTES.settings}
+                    onClick={() => setShowUserMenu(false)}
                     className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 rounded-lg text-left"
                   >
                     <User className="w-4 h-4 text-slate-500 shrink-0" />
                     School Settings
-                  </button>
+                  </Link>
                 )}
 
                 <button

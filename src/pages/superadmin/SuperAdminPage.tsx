@@ -31,6 +31,7 @@ import { purgeAllPlatformData } from '../../services/maintenanceService';
 import { Card, CardBody, CardHeader } from '../../components/common/Card';
 import { Modal } from '../../components/common/Modal';
 import { formatDate, logAudit } from '../../utils/formatters';
+import { useQueryTab } from '../../routes/useQueryTab';
 
 export const SuperAdminPage: React.FC = () => {
   const { isSuperAdmin, logout, currentUser } = useAuth();
@@ -40,7 +41,11 @@ export const SuperAdminPage: React.FC = () => {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'schools' | 'users' | 'maintenance'>('schools');
+  const [activeTab, setActiveTab] = useQueryTab<'schools' | 'users' | 'maintenance'>(
+    'tab',
+    'schools',
+    ['schools', 'users', 'maintenance']
+  );
   
   // Create School Modal
   const [showAddModal, setShowAddModal] = useState(false);

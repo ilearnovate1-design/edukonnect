@@ -13,6 +13,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
 import { SubjectsManagement } from '../../components/subjects/SubjectsManagement';
+import { useQueryTab } from '../../routes/useQueryTab';
 
 export const ClassesPage: React.FC = () => {
   const { role, currentUser, currentTeacher } = useAuth();
@@ -21,7 +22,7 @@ export const ClassesPage: React.FC = () => {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'classes' | 'subjects'>('classes');
+  const [activeTab, setActiveTab] = useQueryTab<'classes' | 'subjects'>('tab', 'classes', ['classes', 'subjects']);
 
   // Modal
   const [showModal, setShowModal] = useState(false);

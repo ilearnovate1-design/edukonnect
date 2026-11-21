@@ -20,6 +20,7 @@ import { Modal } from '../../components/common/Modal';
 import { ReportCardModal } from '../../components/results/ReportCardModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
+import { useQueryTab } from '../../routes/useQueryTab';
 import { logAudit, parseFirebaseError } from '../../utils/formatters';
 import { broadcastAnnouncementNotifications } from '../../services/notificationService';
 import { 
@@ -78,8 +79,12 @@ export const ResultsPage: React.FC = () => {
   const { role, currentUser, currentTeacher, isAtLeastAdmin, appUser } = useAuth();
   const { settings, schoolId } = useSchool();
 
-  // Navigation & View mode
-  const [activeView, setActiveView] = useState<'subject_entry' | 'broadsheet'>('subject_entry');
+  // Navigation & View mode synchronized with URL ?view=
+  const [activeView, setActiveView] = useQueryTab<'subject_entry' | 'broadsheet'>(
+    'view',
+    'subject_entry',
+    ['subject_entry', 'broadsheet']
+  );
 
   // Core Data
   const [classes, setClasses] = useState<SchoolClass[]>([]);

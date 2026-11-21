@@ -18,6 +18,7 @@ import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
 import { createTeacherInvitation, getSchoolInvitations, revokeInvitation } from '../../services/invitationService';
 import { sanitizeFirestoreData } from '../../services/gradingProfileService';
+import { useQueryTab } from '../../routes/useQueryTab';
 
 export const TeachersPage: React.FC = () => {
   const { role, currentUser, appUser, isSuperAdmin } = useAuth();
@@ -28,7 +29,11 @@ export const TeachersPage: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'teachers' | 'invitations'>('teachers');
+  const [activeTab, setActiveTab] = useQueryTab<'teachers' | 'invitations'>(
+    'tab',
+    'teachers',
+    ['teachers', 'invitations']
+  );
 
   // Add/Edit Modal
   const [showModal, setShowModal] = useState(false);
@@ -985,7 +990,7 @@ export const TeachersPage: React.FC = () => {
               <Button
                 variant="primary"
                 onClick={() => {
-                  const inviteUrl = `${window.location.origin}/?invite=${createdInvite.id}`;
+                  const inviteUrl = `${window.location.origin}/activate?invite=${createdInvite.id}`;
                   navigator.clipboard.writeText(inviteUrl);
                   alert('Full invitation activation link copied to clipboard!');
                 }}
