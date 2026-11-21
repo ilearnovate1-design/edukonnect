@@ -128,7 +128,13 @@ export const ResultsPage: React.FC = () => {
   const [selectedStudentForReport, setSelectedStudentForReport] = useState<Student | null>(null);
   const [studentAllResults, setStudentAllResults] = useState<Result[]>([]);
 
-  const normalizedActiveSchool = (schoolId || appUser?.schoolId || '').trim().toLowerCase();
+  const normalizedActiveSchool = (
+    role === 'TEACHER'
+      ? appUser?.schoolId || schoolId || ''
+      : schoolId || appUser?.schoolId || ''
+  )
+    .trim()
+    .toLowerCase();
 
   const matchesTenant = (itemSchoolId?: string) => {
     const itemNorm = itemSchoolId?.trim().toLowerCase();
@@ -242,7 +248,7 @@ export const ResultsPage: React.FC = () => {
         rSnap.forEach((d) => {
           const r = d.data() as Result;
           if (matchesTenant(r.schoolId)) {
-            existingResultsMap.set(r.studentId, r);
+            existingResultsMap.set(r.studentId, { ...r, resultId: d.id });
           }
         });
 
@@ -490,10 +496,13 @@ export const ResultsPage: React.FC = () => {
           return;
         }
 
-        // Clean deterministic session & term string for key
+        // Clean deterministic session & term string for key (tenant-scoped for new records to avoid legacy ID collisions)
+        const cleanSchool = activeSchoolId.replace(/[^a-zA-Z0-9_-]/g, '-');
         const cleanSession = selectedSession.replace(/[^a-zA-Z0-9]/g, '-');
         const cleanTerm = selectedTerm.replace(/\s+/g, '-');
-        const resultId = item.originalResult?.resultId || `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
+        const resultId =
+          item.originalResult?.resultId ||
+          `res_${cleanSchool}_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
         const ref = doc(db, 'results', resultId);
 
         const recordSchoolId =
@@ -589,9 +598,12 @@ export const ResultsPage: React.FC = () => {
         if (!writtenStudentIds.has(s.studentId)) return;
         const existing = updated.get(s.studentId);
         if (existing) {
+          const cleanSchool = activeSchoolId.replace(/[^a-zA-Z0-9_-]/g, '-');
           const cleanSession = selectedSession.replace(/[^a-zA-Z0-9]/g, '-');
           const cleanTerm = selectedTerm.replace(/\s+/g, '-');
-          const resultId = existing.originalResult?.resultId || `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
+          const resultId =
+            existing.originalResult?.resultId ||
+            `res_${cleanSchool}_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
           updated.set(s.studentId, { 
             ...existing, 
             status: statusToSet,

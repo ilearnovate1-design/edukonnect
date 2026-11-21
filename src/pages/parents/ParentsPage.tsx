@@ -19,6 +19,7 @@ import { provisionAccount } from '../../services/provisioningService';
 import { createParentInvitation, getSchoolInvitations, revokeInvitation } from '../../services/invitationService';
 import { sanitizeFirestoreData } from '../../services/gradingProfileService';
 import { useQueryTab } from '../../routes/useQueryTab';
+import { buildHashRouteUrl } from '../../routes/routes';
 
 export const ParentsPage: React.FC = () => {
   const { role, currentUser, appUser, isSuperAdmin } = useAuth();
@@ -871,7 +872,10 @@ export const ParentsPage: React.FC = () => {
               <Button
                 variant="primary"
                 onClick={() => {
-                  const inviteUrl = `${window.location.origin}/activate?invite=${createdInvite.id}`;
+                  const inviteUrl = buildHashRouteUrl(
+                    window.location.origin,
+                    `/activate?invite=${encodeURIComponent(createdInvite.id)}`
+                  );
                   navigator.clipboard.writeText(inviteUrl);
                   alert('Full invitation activation link copied to clipboard!');
                 }}

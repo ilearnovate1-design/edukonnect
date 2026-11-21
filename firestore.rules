@@ -36,12 +36,16 @@ service cloud.firestore {
       );
     }
     
+    function safeStr(val) {
+      return val is string ? val : '';
+    }
+
     function getUserRole() {
-      return userExists() ? getUserData().get('role', '') : '';
+      return userExists() ? safeStr(getUserData().get('role', '')) : '';
     }
 
     function getUserSchoolId() {
-      return userExists() ? getUserData().get('schoolId', '') : '';
+      return userExists() ? safeStr(getUserData().get('schoolId', '')) : '';
     }
 
     function isApproved() {
@@ -61,13 +65,34 @@ service cloud.firestore {
         targetSchoolId is string &&
         targetSchoolId != '' &&
         exists(/databases/$(database)/documents/memberships/$(targetSchoolId.lower() + '_' + request.auth.uid)) &&
-        get(/databases/$(database)/documents/memberships/$(targetSchoolId.lower() + '_' + request.auth.uid)).data.get('status', '') == 'ACTIVE';
+        get(/databases/$(database)/documents/memberships/$(targetSchoolId.lower() + '_' + request.auth.uid)).data.get('status', 'ACTIVE') == 'ACTIVE';
     }
 
     function getMembershipRole(targetSchoolId) {
       return hasActiveMembership(targetSchoolId)
-        ? get(/databases/$(database)/documents/memberships/$(targetSchoolId.lower() + '_' + request.auth.uid)).data.get('role', '')
+        ? safeStr(get(/databases/$(database)/documents/memberships/$(targetSchoolId.lower() + '_' + request.auth.uid)).data.get('role', ''))
         : '';
+    }
+
+    function isVerifiedTeacherInSchool(targetSchoolId) {
+      return isAuthenticated() &&
+        targetSchoolId is string &&
+        targetSchoolId != '' &&
+        userExists() &&
+        'teacherId' in getUserData() &&
+        getUserData().teacherId is string &&
+        getUserData().teacherId != '' &&
+        exists(/databases/$(database)/documents/teachers/$(getUserData().teacherId)) &&
+        safeStr(get(/databases/$(database)/documents/teachers/$(getUserData().teacherId)).data.get('schoolId', '')).lower() == targetSchoolId.lower() &&
+        get(/databases/$(database)/documents/teachers/$(getUserData().teacherId)).data.get('status', 'ACTIVE') != 'INACTIVE' && (
+          safeStr(get(/databases/$(database)/documents/teachers/$(getUserData().teacherId)).data.get('userId', '')) == request.auth.uid ||
+          (
+            request.auth.token != null &&
+            'email' in request.auth.token &&
+            request.auth.token.email != null &&
+            safeStr(get(/databases/$(database)/documents/teachers/$(getUserData().teacherId)).data.get('email', '')).lower() == request.auth.token.email.lower()
+          )
+        );
     }
 
     function hasRoleInSchool(targetSchoolId, allowedRoles) {
@@ -75,7 +100,8 @@ service cloud.firestore {
         targetSchoolId is string &&
         targetSchoolId != '' && (
           (hasActiveMembership(targetSchoolId) && getMembershipRole(targetSchoolId) in allowedRoles) ||
-          (isApprovedOrSetup() && getUserSchoolId().lower() == targetSchoolId.lower() && getUserRole() in allowedRoles)
+          (isApprovedOrSetup() && getUserSchoolId().lower() == targetSchoolId.lower() && getUserRole() in allowedRoles) ||
+          ('TEACHER' in allowedRoles && isVerifiedTeacherInSchool(targetSchoolId))
         )
       );
     }
@@ -85,7 +111,8 @@ service cloud.firestore {
         targetSchoolId is string &&
         targetSchoolId != '' && (
           hasActiveMembership(targetSchoolId) ||
-          (isApprovedOrSetup() && getUserSchoolId().lower() == targetSchoolId.lower())
+          (isApprovedOrSetup() && getUserSchoolId().lower() == targetSchoolId.lower()) ||
+          isVerifiedTeacherInSchool(targetSchoolId)
         )
       );
     }
@@ -126,22 +153,22 @@ service cloud.firestore {
     // Multi-Tenant Isolation Helpers
     // Records must strictly match the user's verified schoolId (via active membership or user profile, case-insensitive).
     function docMatchesTenant(data) {
-      return isSuperAdmin() || isTenantMember(data.get('schoolId', ''));
+      return isSuperAdmin() || isTenantMember(safeStr(data.get('schoolId', '')));
     }
 
     function canCreateInTenant() {
-      return isSuperAdmin() || isTenantMember(request.resource.data.get('schoolId', ''));
+      return isSuperAdmin() || isTenantMember(safeStr(request.resource.data.get('schoolId', '')));
     }
 
     function canUpdateInTenant() {
       return isSuperAdmin() || (
-        isTenantMember(resource.data.get('schoolId', '')) &&
-        request.resource.data.get('schoolId', '').lower() == resource.data.get('schoolId', '').lower()
+        isTenantMember(safeStr(resource.data.get('schoolId', ''))) &&
+        safeStr(request.resource.data.get('schoolId', '')).lower() == safeStr(resource.data.get('schoolId', '')).lower()
       );
     }
 
     function canDeleteInTenant() {
-      return isSuperAdmin() || isTenantMember(resource.data.get('schoolId', ''));
+      return isSuperAdmin() || isTenantMember(safeStr(resource.data.get('schoolId', '')));
     }
 
     // 1. School Profile & Settings (Public read, Staff write)
@@ -469,24 +496,37 @@ service cloud.firestore {
     // 11. Terminal Examination & CA Results
     match /results/{resultId} {
       allow get: if isAuthenticated() && docMatchesTenant(resource.data) && (
-        hasRoleInSchool(resource.data.get('schoolId', ''), ['ADMIN', 'TEACHER']) ||
+        hasRoleInSchool(safeStr(resource.data.get('schoolId', '')), ['ADMIN', 'TEACHER']) ||
         resource.data.get('status', 'DRAFT') == 'PUBLISHED'
       );
       allow list: if isAuthenticated();
       allow create: if isAuthenticated() && (
-        hasRoleInSchool(request.resource.data.get('schoolId', ''), ['ADMIN']) || (
-          hasRoleInSchool(request.resource.data.get('schoolId', ''), ['TEACHER']) && 
+        hasRoleInSchool(safeStr(request.resource.data.get('schoolId', '')), ['ADMIN']) || (
+          hasRoleInSchool(safeStr(request.resource.data.get('schoolId', '')), ['TEACHER']) && 
           request.resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED']
         )
       ) && canCreateInTenant();
       allow update: if isAuthenticated() && (
-        hasRoleInSchool(resource.data.get('schoolId', ''), ['ADMIN']) || (
-          hasRoleInSchool(resource.data.get('schoolId', ''), ['TEACHER']) && 
-          request.resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED'] &&
-          resource.data.get('status', 'DRAFT') != 'PUBLISHED'
+        (
+          (
+            hasRoleInSchool(safeStr(resource.data.get('schoolId', '')), ['ADMIN']) || (
+              hasRoleInSchool(safeStr(resource.data.get('schoolId', '')), ['TEACHER']) && 
+              request.resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED'] &&
+              resource.data.get('status', 'DRAFT') != 'PUBLISHED'
+            )
+          ) && canUpdateInTenant()
+        ) || (
+          // Legacy unscoped result record being assigned to the staff member's active school
+          safeStr(resource.data.get('schoolId', '')) == '' && (
+            hasRoleInSchool(safeStr(request.resource.data.get('schoolId', '')), ['ADMIN']) || (
+              hasRoleInSchool(safeStr(request.resource.data.get('schoolId', '')), ['TEACHER']) &&
+              request.resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED'] &&
+              resource.data.get('status', 'DRAFT') != 'PUBLISHED'
+            )
+          ) && canCreateInTenant()
         )
-      ) && canUpdateInTenant();
-      allow delete: if hasRoleInSchool(resource.data.get('schoolId', ''), ['ADMIN']) && canDeleteInTenant();
+      );
+      allow delete: if hasRoleInSchool(safeStr(resource.data.get('schoolId', '')), ['ADMIN']) && canDeleteInTenant();
     }
 
     // 11b. Configurable Grading Profiles & Standards
@@ -546,9 +586,12 @@ service cloud.firestore {
     match /evaluations/{evalId} {
       allow get: if isAuthenticated() && docMatchesTenant(resource.data);
       allow list: if isAuthenticated();
-      allow create: if isAuthenticated() && hasRoleInSchool(request.resource.data.get('schoolId', ''), ['ADMIN', 'TEACHER']) && canCreateInTenant();
-      allow update: if isAuthenticated() && hasRoleInSchool(resource.data.get('schoolId', ''), ['ADMIN', 'TEACHER']) && canUpdateInTenant();
-      allow delete: if hasRoleInSchool(resource.data.get('schoolId', ''), ['ADMIN']) && canDeleteInTenant();
+      allow create: if isAuthenticated() && hasRoleInSchool(safeStr(request.resource.data.get('schoolId', '')), ['ADMIN', 'TEACHER']) && canCreateInTenant();
+      allow update: if isAuthenticated() && (
+        (hasRoleInSchool(safeStr(resource.data.get('schoolId', '')), ['ADMIN', 'TEACHER']) && canUpdateInTenant()) ||
+        (safeStr(resource.data.get('schoolId', '')) == '' && hasRoleInSchool(safeStr(request.resource.data.get('schoolId', '')), ['ADMIN', 'TEACHER']) && canCreateInTenant())
+      );
+      allow delete: if hasRoleInSchool(safeStr(resource.data.get('schoolId', '')), ['ADMIN']) && canDeleteInTenant();
     }
   }
 }

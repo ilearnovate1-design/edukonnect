@@ -123,3 +123,9 @@ export function isAuthPath(pathname: string): boolean {
     normalized === AUTH_ROUTES.membershipRequired
   );
 }
+
+export function buildHashRouteUrl(origin: string, pageOrPath: string): string {
+  const cleanOrigin = (origin || '').replace(/\/+$/, '');
+  const path = getPathForPage(pageOrPath);
+  return `${cleanOrigin}/#${path}`;
+}

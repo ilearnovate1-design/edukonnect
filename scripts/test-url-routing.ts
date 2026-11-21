@@ -14,6 +14,7 @@ import path from 'node:path';
 import {
   APP_ROUTES,
   AUTH_ROUTES,
+  buildHashRouteUrl,
   getPageIdFromPath,
   getPageTitleFromPath,
   getPathForPage,
@@ -68,12 +69,17 @@ assert(getPageIdFromPath('/students/extra/segment') === 'not-found', 'Unknown ne
 assert(getPageTitleFromPath('/unknown') === 'Page Not Found', 'Unknown path resolves to Page Not Found title');
 assert(isAuthPath(APP_ROUTES.dashboard) === false, 'isAuthPath("/dashboard") is false');
 assert(isAuthPath(APP_ROUTES.students) === false, 'isAuthPath("/students") is false');
+assert(
+  buildHashRouteUrl('https://portal.example.com/', '/activate?invite=INV-123') ===
+    'https://portal.example.com/#/activate?invite=INV-123',
+  'buildHashRouteUrl generates refresh-safe hash route URL'
+);
 
 // 4. Static integration checks across codebase
 const read = (rel: string) => fs.readFileSync(path.resolve(process.cwd(), rel), 'utf8');
 
 const mainSrc = read('src/main.tsx');
-assert(mainSrc.includes('BrowserRouter'), 'src/main.tsx wraps application in BrowserRouter');
+assert(mainSrc.includes('HashRouter'), 'src/main.tsx wraps application in HashRouter so browser refresh never 404s');
 
 const appSrc = read('src/App.tsx');
 assert(
@@ -109,14 +115,14 @@ assert(
 
 const teachersSrc = read('src/pages/teachers/TeachersPage.tsx');
 assert(
-  teachersSrc.includes('/activate?invite=') && teachersSrc.includes('useQueryTab'),
-  'TeachersPage uses /activate?invite= links and URL query-synced tabs'
+  teachersSrc.includes('buildHashRouteUrl') && teachersSrc.includes('/activate?invite=') && teachersSrc.includes('useQueryTab'),
+  'TeachersPage uses buildHashRouteUrl(/activate?invite=) links and URL query-synced tabs'
 );
 
 const parentsSrc = read('src/pages/parents/ParentsPage.tsx');
 assert(
-  parentsSrc.includes('/activate?invite=') && parentsSrc.includes('useQueryTab'),
-  'ParentsPage uses /activate?invite= links and URL query-synced tabs'
+  parentsSrc.includes('buildHashRouteUrl') && parentsSrc.includes('/activate?invite=') && parentsSrc.includes('useQueryTab'),
+  'ParentsPage uses buildHashRouteUrl(/activate?invite=) links and URL query-synced tabs'
 );
 
 for (const tabbedFile of [

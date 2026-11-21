@@ -316,8 +316,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           })
         );
 
-        const resolvedTeacherId = activeTeacher?.teacherId || selectedMembership.teacherId;
-        const resolvedParentId = activeParent?.parentId || selectedMembership.parentId;
+        const resolvedTeacherDocId = activeTeacher
+          ? (teacherDocIdMap.get(activeTeacher.teacherId) || activeTeacher.teacherId)
+          : selectedMembership.teacherId;
+        const resolvedParentDocId = activeParent
+          ? (parentDocIdMap.get(activeParent.parentId) || activeParent.parentId)
+          : selectedMembership.parentId;
 
         const finalUser: AppUser = sanitizeFirestoreData({
           uid: firebaseUser.uid,
@@ -326,8 +330,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           role,
           isSuperAdmin: false,
           schoolId: targetSchoolId,
-          ...(resolvedTeacherId ? { teacherId: resolvedTeacherId } : {}),
-          ...(resolvedParentId ? { parentId: resolvedParentId } : {}),
+          ...(resolvedTeacherDocId ? { teacherId: resolvedTeacherDocId } : {}),
+          ...(resolvedParentDocId ? { parentId: resolvedParentDocId } : {}),
           assignedClassIds: activeTeacher?.assignedClassIds || [],
           approvalStatus: 'APPROVED',
           active: true,
@@ -336,31 +340,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedAt: serverTimestamp(),
         });
 
+        const membershipDocId = `${targetSchoolId}_${firebaseUser.uid}`;
+        const membershipPayload = sanitizeFirestoreData({
+          id: membershipDocId,
+          userId: firebaseUser.uid,
+          userEmail: emailLower,
+          schoolId: targetSchoolId,
+          ...(selectedMembership.schoolName ? { schoolName: selectedMembership.schoolName } : {}),
+          role,
+          status: 'ACTIVE',
+          ...(resolvedTeacherDocId ? { teacherId: resolvedTeacherDocId } : {}),
+          ...(resolvedParentDocId ? { parentId: resolvedParentDocId } : {}),
+          ...(selectedMembership.linkedStudentIds ? { linkedStudentIds: selectedMembership.linkedStudentIds } : {}),
+          activatedAt: serverTimestamp(),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
         try {
           const syncBatch = writeBatch(db);
-          const membershipDocId = `${targetSchoolId}_${firebaseUser.uid}`;
 
-          // Persist authoritative membership doc if not already present (or missing userId link)
-          if (!persistedMembershipIds.has(membershipDocId) && (resolvedTeacherId || resolvedParentId)) {
-            syncBatch.set(
-              doc(db, 'memberships', membershipDocId),
-              sanitizeFirestoreData({
-                id: membershipDocId,
-                userId: firebaseUser.uid,
-                userEmail: emailLower,
-                schoolId: targetSchoolId,
-                ...(selectedMembership.schoolName ? { schoolName: selectedMembership.schoolName } : {}),
-                role,
-                status: 'ACTIVE',
-                ...(resolvedTeacherId ? { teacherId: resolvedTeacherId } : {}),
-                ...(resolvedParentId ? { parentId: resolvedParentId } : {}),
-                ...(selectedMembership.linkedStudentIds ? { linkedStudentIds: selectedMembership.linkedStudentIds } : {}),
-                activatedAt: serverTimestamp(),
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              }),
-              { merge: true }
-            );
+          // Persist authoritative membership doc if not already present at expected ID
+          if (!persistedMembershipIds.has(membershipDocId) && (resolvedTeacherDocId || resolvedParentDocId)) {
+            syncBatch.set(doc(db, 'memberships', membershipDocId), membershipPayload, { merge: true });
           }
 
           // Link userId on teacher/parent record if discovered by email
@@ -382,7 +384,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           syncBatch.set(userDocRef, finalUser, { merge: true });
           await syncBatch.commit();
         } catch (e) {
-          console.warn('Could not sync active user and membership docs:', e);
+          console.warn('Batch membership/user sync failed, attempting individual fallback:', e);
+          if (!persistedMembershipIds.has(membershipDocId) && (resolvedTeacherDocId || resolvedParentDocId)) {
+            try {
+              await setDoc(doc(db, 'memberships', membershipDocId), membershipPayload, { merge: true });
+            } catch (mFallbackErr) {
+              console.warn('Membership fallback write notice:', mFallbackErr);
+            }
+          }
+          try {
+            await setDoc(userDocRef, finalUser, { merge: true });
+          } catch (uFallbackErr) {
+            console.warn('User profile fallback write notice:', uFallbackErr);
+          }
         }
 
         setAppUser(finalUser);
