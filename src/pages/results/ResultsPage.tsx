@@ -159,8 +159,6 @@ export const ResultsPage: React.FC = () => {
 
   // 1. Fetch Classes, Subjects, and Grading Profiles
   useEffect(() => {
-    if (!normalizedActiveSchool) return;
-
     const fetchBase = async () => {
       try {
         // Classes
@@ -172,24 +170,15 @@ export const ResultsPage: React.FC = () => {
         });
 
         if (role === 'TEACHER') {
-          const assignedIds = Array.from(
-            new Set([
-              ...(currentTeacher?.assignedClassIds || []),
-              ...(appUser?.assignedClassIds || []),
-            ])
-          );
-          const teacherIds = [currentTeacher?.teacherId, appUser?.teacherId].filter(Boolean) as string[];
+          const assignedIds = currentTeacher?.assignedClassIds || [];
           cList = cList.filter(
-            (c) => assignedIds.includes(c.classId) || (!!c.classTeacherId && teacherIds.includes(c.classTeacherId))
+            (c) => assignedIds.includes(c.classId) || c.classTeacherId === currentTeacher?.teacherId
           );
         }
 
         setClasses(cList);
-        if (cList.length > 0 && (!selectedClassId || !cList.some((c) => c.classId === selectedClassId))) {
-          setSelectedClassId(cList[0].classId);
-        } else if (cList.length === 0) {
-          setSelectedClassId('');
-        }
+        if (cList.length > 0 && !selectedClassId) setSelectedClassId(cList[0].classId);
+        else if (cList.length === 0) setSelectedClassId('');
 
         // Subjects
         const subSnap = await getDocs(collection(db, 'subjects'));
@@ -200,30 +189,23 @@ export const ResultsPage: React.FC = () => {
         });
 
         if (role === 'TEACHER' && currentTeacher?.subjects && currentTeacher.subjects.length > 0) {
-          const allowedSubjects = new Set(currentTeacher.subjects.map((s) => s.trim().toLowerCase()));
-          subList = subList.filter(
-            (s) =>
-              allowedSubjects.has(s.subjectId.trim().toLowerCase()) ||
-              allowedSubjects.has(s.name.trim().toLowerCase())
-          );
+          const allowedSubjects = new Set(currentTeacher.subjects);
+          subList = subList.filter((s) => allowedSubjects.has(s.subjectId) || allowedSubjects.has(s.name));
         }
 
         setSubjects(subList);
-        if (subList.length > 0 && (!selectedSubjectId || !subList.some((s) => s.subjectId === selectedSubjectId))) {
-          setSelectedSubjectId(subList[0].subjectId);
-        } else if (subList.length === 0) {
-          setSelectedSubjectId('');
-        }
+        if (subList.length > 0 && !selectedSubjectId) setSelectedSubjectId(subList[0].subjectId);
+        else if (subList.length === 0) setSelectedSubjectId('');
 
-        // Grading Profiles (auto-seed only for admins)
-        const profs = await fetchGradingProfiles(normalizedActiveSchool || schoolId || 'default', isAtLeastAdmin);
+        // Grading Profiles
+        const profs = await fetchGradingProfiles(schoolId || 'default');
         setGradingProfiles(profs);
       } catch (err) {
         console.error('Error fetching base data:', err);
       }
     };
     fetchBase();
-  }, [role, currentTeacher, appUser?.assignedClassIds, appUser?.teacherId, schoolId, normalizedActiveSchool, isAtLeastAdmin]);
+  }, [role, currentTeacher, schoolId]);
 
   // 2. Fetch Students & Existing Scores for selected Class, Subject, Term, Session
   useEffect(() => {
@@ -414,28 +396,15 @@ export const ResultsPage: React.FC = () => {
       return;
     }
 
-    // Role Security checks: Only admins can approve or publish; teachers may save DRAFT or SUBMITTED
-    if (!isAtLeastAdmin && role !== 'TEACHER') {
-      setErrorMsg('Security Restriction: You do not have permission to record or modify examination results.');
-      return;
-    }
-
-    if (!isAtLeastAdmin && (statusToSet === 'APPROVED' || statusToSet === 'PUBLISHED')) {
-      setErrorMsg('Security Restriction: Only school administrators can approve or publish results. Teachers can save as draft or submit for approval.');
-      return;
-    }
-
+    // Role Security checks
     if (role === 'TEACHER') {
-      const assignedIds = Array.from(
-        new Set([
-          ...(currentTeacher?.assignedClassIds || []),
-          ...(appUser?.assignedClassIds || []),
-        ])
-      );
-      const teacherIds = [currentTeacher?.teacherId, appUser?.teacherId].filter(Boolean) as string[];
-      const isAuthorized =
-        assignedIds.includes(selectedClassId) ||
-        classes.some((c) => c.classId === selectedClassId && !!c.classTeacherId && teacherIds.includes(c.classTeacherId));
+      if (statusToSet === 'APPROVED' || statusToSet === 'PUBLISHED') {
+        setErrorMsg('Security Restriction: Only administrators and designated approvers can approve or publish results.');
+        return;
+      }
+
+      const assignedIds = currentTeacher?.assignedClassIds || [];
+      const isAuthorized = assignedIds.includes(selectedClassId) || classes.some(c => c.classId === selectedClassId && c.classTeacherId === currentTeacher?.teacherId);
       if (!isAuthorized) {
         setErrorMsg('Security Restriction: You are not authorized to record scores for this class.');
         return;
@@ -493,13 +462,6 @@ export const ResultsPage: React.FC = () => {
     setSuccessMsg('');
     setErrorMsg('');
     try {
-      if (!isAtLeastAdmin && role !== 'TEACHER') {
-        throw new Error('Only teachers and school administrators can save examination results.');
-      }
-      if (!isAtLeastAdmin && (statusToSet === 'APPROVED' || statusToSet === 'PUBLISHED')) {
-        throw new Error('Only school administrators can approve or publish results.');
-      }
-
       const activeSchoolId = normalizedActiveSchool;
       if (!activeSchoolId) {
         throw new Error('Your account is not associated with an active school. Please refresh or contact your administrator.');
@@ -508,7 +470,6 @@ export const ResultsPage: React.FC = () => {
       const batch = writeBatch(db);
       let count = 0;
       let skippedPublishedCount = 0;
-      let skippedApprovedCount = 0;
       const writtenStudentIds = new Set<string>();
 
       // Frozen snapshot of active grading profile
@@ -529,18 +490,9 @@ export const ResultsPage: React.FC = () => {
         const item = scoresMap.get(s.studentId);
         if (!item) return;
 
-        // Teachers cannot update already-PUBLISHED records; skip them cleanly instead of failing the batch.
-        // Also preserve unchanged APPROVED records so saving another pupil's draft doesn't downgrade admin approvals.
+        // Teachers cannot update already-PUBLISHED records; skip them cleanly instead of failing the batch
         if (role === 'TEACHER' && item.originalResult?.status === 'PUBLISHED') {
           skippedPublishedCount++;
-          return;
-        }
-        if (
-          role === 'TEACHER' &&
-          item.originalResult?.status === 'APPROVED' &&
-          item.originalResult.totalScore === item.totalScore
-        ) {
-          skippedApprovedCount++;
           return;
         }
 
@@ -632,8 +584,6 @@ export const ResultsPage: React.FC = () => {
       if (count === 0) {
         if (skippedPublishedCount > 0) {
           setErrorMsg('All student results for this subject are already PUBLISHED and locked from teacher edits.');
-        } else if (skippedApprovedCount > 0) {
-          setSuccessMsg('All student results for this subject are already APPROVED and awaiting administrator publication.');
         } else {
           setErrorMsg('No student score records were available to save.');
         }
@@ -1007,18 +957,16 @@ export const ResultsPage: React.FC = () => {
                 </Button>
 
                 {/* Workflow Save Actions */}
-                {(role === 'TEACHER' || isAtLeastAdmin) && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => initiateSaveResults('DRAFT')}
-                    disabled={saving || students.length === 0}
-                    className="text-xs flex items-center gap-1.5 font-bold"
-                  >
-                    <Save className="w-3.5 h-3.5" />
-                    Save Draft
-                  </Button>
-                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => initiateSaveResults('DRAFT')}
+                  disabled={saving || students.length === 0}
+                  className="text-xs flex items-center gap-1.5 font-bold"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  Save Draft
+                </Button>
 
                 {role === 'TEACHER' && (
                   <Button

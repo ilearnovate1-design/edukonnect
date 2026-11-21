@@ -55,10 +55,7 @@ export const sanitizeFirestoreData = <T>(data: T): T => {
 /**
  * Fetch all grading profiles for a tenant school
  */
-export const fetchGradingProfiles = async (
-  schoolId: string = 'default',
-  allowAutoSeed: boolean = true
-): Promise<GradingProfile[]> => {
+export const fetchGradingProfiles = async (schoolId: string = 'default'): Promise<GradingProfile[]> => {
   try {
     const q = query(
       collection(db, PROFILES_COLLECTION),
@@ -70,18 +67,9 @@ export const fetchGradingProfiles = async (
       list.push(d.data() as GradingProfile);
     });
 
-    // If no profiles exist for this school yet, auto-seed only when caller is permitted (Admin)
+    // If no profiles exist for this school yet, auto-seed default configurable profiles
     if (list.length === 0) {
-      if (allowAutoSeed) {
-        return await seedDefaultGradingProfilesForSchool(schoolId);
-      }
-      const categories: (keyof typeof DEFAULT_GRADING_PROFILES)[] = ['PRIMARY', 'JSS', 'SSS', 'NURSERY'];
-      return categories.map((cat) => ({
-        ...DEFAULT_GRADING_PROFILES[cat],
-        profileId: `gp_${schoolId}_${cat.toLowerCase()}`,
-        schoolId,
-        version: 1,
-      }));
+      return await seedDefaultGradingProfilesForSchool(schoolId);
     }
 
     return list.sort((a, b) => a.name.localeCompare(b.name));
