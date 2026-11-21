@@ -20,11 +20,12 @@ import { Modal } from '../../components/common/Modal';
 import { ReportCardModal } from '../../components/results/ReportCardModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
-import { logAudit } from '../../utils/formatters';
+import { logAudit, parseFirebaseError } from '../../utils/formatters';
 import { broadcastAnnouncementNotifications } from '../../services/notificationService';
 import { 
   fetchGradingProfiles, 
-  resolveGradingProfile 
+  resolveGradingProfile,
+  sanitizeFirestoreData
 } from '../../services/gradingProfileService';
 import { 
   calculateSubjectResult, 
@@ -74,7 +75,7 @@ interface StudentScoreDraft {
 }
 
 export const ResultsPage: React.FC = () => {
-  const { role, currentUser, currentTeacher, isAtLeastAdmin } = useAuth();
+  const { role, currentUser, currentTeacher, isAtLeastAdmin, appUser } = useAuth();
   const { settings, schoolId } = useSchool();
 
   // Navigation & View mode
@@ -122,8 +123,14 @@ export const ResultsPage: React.FC = () => {
   const [selectedStudentForReport, setSelectedStudentForReport] = useState<Student | null>(null);
   const [studentAllResults, setStudentAllResults] = useState<Result[]>([]);
 
+  const normalizedActiveSchool = (schoolId || appUser?.schoolId || '').trim().toLowerCase();
+
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
+    const itemNorm = itemSchoolId?.trim().toLowerCase();
+    if (!normalizedActiveSchool || normalizedActiveSchool === 'default') {
+      return !itemNorm || itemNorm === 'default';
+    }
+    return itemNorm === normalizedActiveSchool;
   };
 
   const selectedClass = useMemo(() => {
@@ -203,7 +210,10 @@ export const ResultsPage: React.FC = () => {
           query(collection(db, 'students'), where('classId', '==', selectedClassId), where('status', '==', 'ACTIVE'))
         );
         const sList: Student[] = [];
-        sSnap.forEach((d) => sList.push(d.data() as Student));
+        sSnap.forEach((d) => {
+          const st = d.data() as Student;
+          if (matchesTenant(st.schoolId)) sList.push(st);
+        });
         sList.sort((a, b) => a.firstName.localeCompare(b.firstName));
         setStudents(sList);
 
@@ -226,7 +236,9 @@ export const ResultsPage: React.FC = () => {
         const existingResultsMap = new Map<string, Result>();
         rSnap.forEach((d) => {
           const r = d.data() as Result;
-          existingResultsMap.set(r.studentId, r);
+          if (matchesTenant(r.schoolId)) {
+            existingResultsMap.set(r.studentId, r);
+          }
         });
 
         const newDraftMap = new Map<string, StudentScoreDraft>();
@@ -296,7 +308,10 @@ export const ResultsPage: React.FC = () => {
           )
         );
         const rList: Result[] = [];
-        rSnap.forEach(d => rList.push(d.data() as Result));
+        rSnap.forEach((d) => {
+          const r = d.data() as Result;
+          if (matchesTenant(r.schoolId)) rList.push(r);
+        });
         setAllClassResults(rList);
 
         const summary = calculateClassBroadsheet(
@@ -322,6 +337,7 @@ export const ResultsPage: React.FC = () => {
     const updated = new Map<string, StudentScoreDraft>(scoresMap);
     const existing = updated.get(studentId);
     if (!existing) return;
+    if (role === 'TEACHER' && existing.originalResult?.status === 'PUBLISHED') return;
 
     const compConfig = activeProfile.components.find(c => c.id === componentId);
     const max = compConfig?.maxScore || 100;
@@ -364,6 +380,11 @@ export const ResultsPage: React.FC = () => {
       return;
     }
 
+    if (!normalizedActiveSchool) {
+      setErrorMsg('Cannot save results: Your account is not linked to an active school.');
+      return;
+    }
+
     // Role Security checks
     if (role === 'TEACHER') {
       if (statusToSet === 'APPROVED' || statusToSet === 'PUBLISHED') {
@@ -403,7 +424,6 @@ export const ResultsPage: React.FC = () => {
     let hasPublishedChanges = false;
     scoresMap.forEach((entry) => {
       if (entry.originalResult?.status === 'PUBLISHED') {
-        // Compare scores
         const originalTotal = entry.originalResult.totalScore;
         if (originalTotal !== entry.totalScore) {
           hasPublishedChanges = true;
@@ -412,7 +432,11 @@ export const ResultsPage: React.FC = () => {
     });
 
     if (hasPublishedChanges) {
-      // Prompt for revision reason to record in immutable audit log
+      if (role === 'TEACHER') {
+        setErrorMsg('Published results are locked and cannot be modified by teachers. Please contact a school administrator for post-publication revisions.');
+        return;
+      }
+      // Prompt for revision reason to record in immutable audit log (Admin only)
       setPendingSaveStatus(statusToSet);
       setShowRevisionModal(true);
       return;
@@ -427,8 +451,15 @@ export const ResultsPage: React.FC = () => {
     setSuccessMsg('');
     setErrorMsg('');
     try {
+      const activeSchoolId = normalizedActiveSchool;
+      if (!activeSchoolId) {
+        throw new Error('Your account is not associated with an active school. Please refresh or contact your administrator.');
+      }
+
       const batch = writeBatch(db);
       let count = 0;
+      let skippedPublishedCount = 0;
+      const writtenStudentIds = new Set<string>();
 
       // Frozen snapshot of active grading profile
       const profileSnapshot = {
@@ -448,18 +479,30 @@ export const ResultsPage: React.FC = () => {
         const item = scoresMap.get(s.studentId);
         if (!item) return;
 
+        // Teachers cannot update already-PUBLISHED records; skip them cleanly instead of failing the batch
+        if (role === 'TEACHER' && item.originalResult?.status === 'PUBLISHED') {
+          skippedPublishedCount++;
+          return;
+        }
+
         // Clean deterministic session & term string for key
         const cleanSession = selectedSession.replace(/[^a-zA-Z0-9]/g, '-');
         const cleanTerm = selectedTerm.replace(/\s+/g, '-');
-        const resultId = `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
+        const resultId = item.originalResult?.resultId || `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
         const ref = doc(db, 'results', resultId);
+
+        const recordSchoolId =
+          item.originalResult?.schoolId &&
+          item.originalResult.schoolId.trim().toLowerCase() === activeSchoolId
+            ? item.originalResult.schoolId
+            : activeSchoolId;
 
         // Fallback backward compatibility numbers
         const caScore = item.componentScores['ca'] ?? item.componentScores['ca1'] ?? 0;
         const examScore = item.componentScores['exam'] ?? item.totalScore ?? 0;
 
         // Audit History Entry if revised
-        const auditHistory: ResultAuditEntry[] = item.originalResult?.auditHistory || [];
+        const auditHistory: ResultAuditEntry[] = [...(item.originalResult?.auditHistory || [])];
         if (item.originalResult && item.originalResult.status === 'PUBLISHED' && item.originalResult.totalScore !== item.totalScore) {
           auditHistory.push({
             timestamp: nowIso,
@@ -478,7 +521,7 @@ export const ResultsPage: React.FC = () => {
 
         const payload: Partial<Result> = {
           resultId,
-          schoolId: s.schoolId || schoolId || 'default',
+          schoolId: recordSchoolId,
           studentId: s.studentId,
           classId: selectedClassId,
           subjectId: selectedSubjectId,
@@ -514,34 +557,54 @@ export const ResultsPage: React.FC = () => {
           payload.publishedAt = serverTimestamp();
         }
 
-        batch.set(ref, { ...payload, createdAt: item.originalResult?.createdAt || serverTimestamp() }, { merge: true });
+        const sanitizedDoc = sanitizeFirestoreData({
+          ...payload,
+          createdAt: item.originalResult?.createdAt || serverTimestamp(),
+        });
+
+        batch.set(ref, sanitizedDoc, { merge: true });
+        writtenStudentIds.add(s.studentId);
         count++;
       });
 
+      if (count === 0) {
+        if (skippedPublishedCount > 0) {
+          setErrorMsg('All student results for this subject are already PUBLISHED and locked from teacher edits.');
+        } else {
+          setErrorMsg('No student score records were available to save.');
+        }
+        return;
+      }
+
       await batch.commit();
 
-      // Update local state statuses
+      // Update local state statuses only for written records
       const updated = new Map<string, StudentScoreDraft>(scoresMap);
       students.forEach((s) => {
+        if (!writtenStudentIds.has(s.studentId)) return;
         const existing = updated.get(s.studentId);
         if (existing) {
+          const cleanSession = selectedSession.replace(/[^a-zA-Z0-9]/g, '-');
+          const cleanTerm = selectedTerm.replace(/\s+/g, '-');
+          const resultId = existing.originalResult?.resultId || `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
           updated.set(s.studentId, { 
             ...existing, 
             status: statusToSet,
             originalResult: {
               ...(existing.originalResult || {}),
-              resultId: `res_${s.studentId}_${selectedSubjectId}_${selectedTerm}_${selectedSession}`,
+              resultId,
+              schoolId: activeSchoolId,
               studentId: s.studentId,
               classId: selectedClassId,
               subjectId: selectedSubjectId,
               academicSession: selectedSession,
               term: selectedTerm,
-              caScore: 0,
-              examScore: 0,
+              caScore: existing.componentScores['ca'] ?? existing.componentScores['ca1'] ?? 0,
+              examScore: existing.componentScores['exam'] ?? existing.totalScore ?? 0,
               totalScore: existing.totalScore,
               grade: existing.grade,
               status: statusToSet,
-              createdAt: null,
+              createdAt: existing.originalResult?.createdAt || null,
               updatedAt: null,
             } as Result
           });
@@ -555,7 +618,7 @@ export const ResultsPage: React.FC = () => {
         'results',
         `${selectedClassId}_${selectedSubjectId}`,
         `${statusToSet} scores for ${count} students in ${selectedSubjectName} (${activeProfile.name})`,
-        schoolId || 'default'
+        activeSchoolId
       );
       
       if (statusToSet === 'PUBLISHED') {
@@ -564,22 +627,23 @@ export const ResultsPage: React.FC = () => {
           'Examination Results Published',
           `Terminal results for ${selectedSubjectName} have been published and are available on parent portals.`,
           selectedClassId,
-          schoolId || 'default'
+          activeSchoolId
         );
       }
 
+      const lockedNote = skippedPublishedCount > 0 ? ` (${skippedPublishedCount} already-published record(s) remained locked)` : '';
       setSuccessMsg(
         statusToSet === 'PUBLISHED'
           ? `Successfully published results for ${count} students! Visible on parent and student portals.`
           : statusToSet === 'SUBMITTED'
-          ? `Submitted marks for ${count} students for administrative review.`
-          : `Saved scores as DRAFT for ${count} students.`
+          ? `Submitted marks for ${count} students for administrative review.${lockedNote}`
+          : `Saved scores as DRAFT for ${count} students.${lockedNote}`
       );
       setShowRevisionModal(false);
       setRevisionReason('');
     } catch (err: any) {
       console.error('Error saving results:', err);
-      setErrorMsg(err.message || 'Failed to save results.');
+      setErrorMsg(parseFirebaseError(err));
     } finally {
       setSaving(false);
     }
@@ -662,7 +726,10 @@ export const ResultsPage: React.FC = () => {
         )
       );
       const resList: Result[] = [];
-      rSnap.forEach((d) => resList.push(d.data() as Result));
+      rSnap.forEach((d) => {
+        const r = d.data() as Result;
+        if (matchesTenant(r.schoolId)) resList.push(r);
+      });
       setStudentAllResults(resList);
       setSelectedStudentForReport(student);
     } catch (err) {
@@ -995,10 +1062,13 @@ export const ResultsPage: React.FC = () => {
                                   max={comp.maxScore}
                                   step="any"
                                   placeholder="—"
+                                  disabled={role === 'TEACHER' && scoreData?.originalResult?.status === 'PUBLISHED'}
                                   value={displayVal}
                                   onChange={(e) => handleScoreChange(student.studentId, comp.id, e.target.value)}
                                   className={`w-16 px-2 py-1 text-center text-xs font-semibold rounded border transition-colors focus:outline-none focus:ring-1 ${
-                                    isOutOfRange
+                                    role === 'TEACHER' && scoreData?.originalResult?.status === 'PUBLISHED'
+                                      ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                                      : isOutOfRange
                                       ? 'bg-rose-50 border-rose-400 text-rose-800 focus:ring-rose-500'
                                       : displayVal === ''
                                       ? 'bg-white border-slate-300 text-slate-700 focus:ring-emerald-500'

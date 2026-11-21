@@ -17,6 +17,7 @@ import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
 import { createParentInvitation, getSchoolInvitations, revokeInvitation } from '../../services/invitationService';
+import { sanitizeFirestoreData } from '../../services/gradingProfileService';
 
 export const ParentsPage: React.FC = () => {
   const { role, currentUser, appUser, isSuperAdmin } = useAuth();
@@ -57,7 +58,9 @@ export const ParentsPage: React.FC = () => {
   const [copiedCode, setCopiedCode] = useState(false);
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
+    const active = schoolId?.trim().toLowerCase();
+    const item = itemSchoolId?.trim().toLowerCase();
+    return item ? item === active : (active === 'default' || !active);
   };
 
   const generatePassword = () => {
@@ -86,6 +89,7 @@ export const ParentsPage: React.FC = () => {
         const item = d.data() as Student;
         if (matchesTenant(item.schoolId)) sList.push(item);
       });
+      setStudents(sList);
       if (schoolId) {
         try {
           const invList = await getSchoolInvitations(schoolId);
@@ -269,10 +273,34 @@ export const ParentsPage: React.FC = () => {
         }
       }
 
-      // If user ID was not assigned yet, check if a user document exists with this email
+      // If user ID was not assigned yet, check memberships or school users with this email
       if (!resolvedUserId) {
         try {
-          const uSnap = await getDocs(query(collection(db, 'users'), where('email', '==', normalizedEmail)));
+          const mSnap = await getDocs(
+            query(
+              collection(db, 'memberships'),
+              where('schoolId', '==', normalizedSchoolId),
+              where('userEmail', '==', normalizedEmail)
+            )
+          );
+          if (!mSnap.empty) {
+            resolvedUserId = (mSnap.docs[0].data() as any).userId;
+            if (resolvedUserId) payload.userId = resolvedUserId;
+          }
+        } catch (mLookupErr) {
+          console.warn('Membership lookup notice:', mLookupErr);
+        }
+      }
+
+      if (!resolvedUserId) {
+        try {
+          const uSnap = await getDocs(
+            query(
+              collection(db, 'users'),
+              where('schoolId', '==', normalizedSchoolId),
+              where('email', '==', normalizedEmail)
+            )
+          );
           if (!uSnap.empty) {
             resolvedUserId = uSnap.docs[0].id;
             payload.userId = resolvedUserId;
@@ -282,8 +310,31 @@ export const ParentsPage: React.FC = () => {
         }
       }
 
-      // Keep user doc securely in sync with verified schoolId, role, and parentId
+      // Keep membership & user doc securely in sync with verified schoolId, role, and parentId
       if (resolvedUserId) {
+        try {
+          await setDoc(
+            doc(db, 'memberships', `${normalizedSchoolId}_${resolvedUserId}`),
+            sanitizeFirestoreData({
+              id: `${normalizedSchoolId}_${resolvedUserId}`,
+              userId: resolvedUserId,
+              userEmail: normalizedEmail,
+              schoolId: normalizedSchoolId,
+              schoolName: settings.schoolName || 'EduKonnect School',
+              role: 'PARENT',
+              status: 'ACTIVE',
+              parentId: pId,
+              linkedStudentIds: selectedChildIds,
+              activatedAt: serverTimestamp(),
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            }),
+            { merge: true }
+          );
+        } catch (memSyncErr) {
+          console.warn('Parent membership sync notice:', memSyncErr);
+        }
+
         try {
           await setDoc(doc(db, 'users', resolvedUserId), {
             schoolId: normalizedSchoolId,
@@ -291,6 +342,7 @@ export const ParentsPage: React.FC = () => {
             parentId: pId,
             displayName: `${firstName.trim()} ${lastName.trim()}`,
             approvalStatus: 'APPROVED',
+            active: true,
             updatedAt: serverTimestamp()
           }, { merge: true });
         } catch (syncErr) {

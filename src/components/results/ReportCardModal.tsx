@@ -13,7 +13,7 @@ import {
 } from '../../types';
 import { useSchool } from '../../contexts/SchoolContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { formatDate } from '../../utils/formatters';
+import { formatDate, parseFirebaseError } from '../../utils/formatters';
 import { printDocumentElement, downloadDocumentAsFile } from '../../utils/documentGenerator';
 import { getStudentEvaluation, saveStudentEvaluation } from '../../services/evaluationService';
 import { DEFAULT_REPORT_TEMPLATE, DEFAULT_AFFECTIVE_TRAITS } from '../../services/schoolService';
@@ -101,8 +101,8 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
   session,
   gradingProfile,
 }) => {
-  const { settings } = useSchool();
-  const { role, currentUser, currentTeacher } = useAuth();
+  const { settings, schoolId } = useSchool();
+  const { role, currentUser, currentTeacher, appUser } = useAuth();
 
   const reportTemplate = settings.reportTemplate || DEFAULT_REPORT_TEMPLATE;
   const traitsList: AffectiveTraitConfig[] = reportTemplate.affectiveTraits?.length 
@@ -217,6 +217,7 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
   
   const [isSavingEvaluation, setIsSavingEvaluation] = useState(false);
   const [evalSaveSuccess, setEvalSaveSuccess] = useState(false);
+  const [evalSaveError, setEvalSaveError] = useState('');
 
   // Load existing student evaluation from Firestore
   useEffect(() => {
@@ -263,6 +264,7 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
     loadEvaluation();
     setIsEditingRemarks(false);
     setEvalSaveSuccess(false);
+    setEvalSaveError('');
 
     return () => {
       isMounted = false;
@@ -281,8 +283,16 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
   const handleSaveEvaluation = async () => {
     if (!student) return;
     setIsSavingEvaluation(true);
+    setEvalSaveError('');
+    setEvalSaveSuccess(false);
     try {
+      const activeSchoolId = (schoolId || appUser?.schoolId || student.schoolId || '').trim().toLowerCase();
+      if (!activeSchoolId) {
+        throw new Error('Cannot save remarks: your account has no active school association.');
+      }
+
       await saveStudentEvaluation({
+        schoolId: activeSchoolId,
         studentId: student.studentId,
         term: currentTerm,
         academicSession: currentSession,
@@ -291,14 +301,15 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
         teacherName: customTeacherName.trim(),
         verdict: resultVerdict,
         affectiveScores: customAffectiveScores,
-        updatedBy: currentUser?.uid || role,
+        updatedBy: currentUser?.uid || role || 'staff',
       });
 
       setEvalSaveSuccess(true);
       setTimeout(() => setEvalSaveSuccess(false), 3000);
       setIsEditingRemarks(false);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving student evaluation:', err);
+      setEvalSaveError(parseFirebaseError(err));
     } finally {
       setIsSavingEvaluation(false);
     }
@@ -542,6 +553,13 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
                 })}
               </div>
             </div>
+          </div>
+        )}
+
+        {evalSaveError && (
+          <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-700 shrink-0" />
+            <span className="font-medium">{evalSaveError}</span>
           </div>
         )}
 

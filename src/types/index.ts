@@ -16,6 +16,7 @@ export interface SchoolMembership {
   invitedBy?: string;
   invitedAt?: any;
   activatedAt?: any;
+  invitationId?: string;
   createdAt: any;
   updatedAt: any;
 }
