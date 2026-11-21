@@ -180,6 +180,19 @@ assert(
   'Teacher can save DRAFT over existing SUBMITTED result with case-insensitive schoolId match'
 );
 assert(
+  !canTeacherWriteResult(staleTeacherUser, activeMemberships, { schoolId: 'graceacademy', status: 'APPROVED' }),
+  'Teacher CANNOT create APPROVED result (Admin only)'
+);
+assert(
+  !canTeacherWriteResult(
+    staleTeacherUser,
+    activeMemberships,
+    { schoolId: 'graceacademy', status: 'APPROVED' },
+    { schoolId: 'graceacademy', status: 'SUBMITTED' }
+  ),
+  'Teacher CANNOT transition SUBMITTED result to APPROVED (Admin only)'
+);
+assert(
   !canTeacherWriteResult(staleTeacherUser, activeMemberships, { schoolId: 'graceacademy', status: 'PUBLISHED' }),
   'Teacher CANNOT directly create PUBLISHED result'
 );
@@ -199,6 +212,40 @@ assert(
 assert(
   !canTeacherWriteResult(staleTeacherUser, activeMemberships, { schoolId: 'default', status: 'SUBMITTED' }),
   'Teacher of graceacademy CANNOT write results into default school'
+);
+
+const schoolAdminUser: RuleUser = {
+  uid: 'admin-uid-1',
+  role: 'ADMIN',
+  schoolId: 'graceacademy',
+  approvalStatus: 'APPROVED',
+};
+const adminMemberships: RuleMembership[] = [
+  {
+    id: 'graceacademy_admin-uid-1',
+    userId: 'admin-uid-1',
+    schoolId: 'graceacademy',
+    role: 'ADMIN',
+    status: 'ACTIVE',
+  },
+];
+assert(
+  canTeacherWriteResult(
+    schoolAdminUser,
+    adminMemberships,
+    { schoolId: 'graceacademy', status: 'APPROVED' },
+    { schoolId: 'graceacademy', status: 'SUBMITTED' }
+  ),
+  'School Admin CAN approve SUBMITTED results (APPROVED)'
+);
+assert(
+  canTeacherWriteResult(
+    schoolAdminUser,
+    adminMemberships,
+    { schoolId: 'graceacademy', status: 'PUBLISHED' },
+    { schoolId: 'graceacademy', status: 'APPROVED' }
+  ),
+  'School Admin CAN publish results (PUBLISHED)'
 );
 
 // 1b. Verified Teacher Doc Fallback & Legacy Unscoped Result Claiming
@@ -376,6 +423,24 @@ assert(
 assert(
   resultsPageText.includes('`res_${cleanSchool}_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`'),
   'ResultsPage generates tenant-scoped resultId for new result documents'
+);
+assert(
+  resultsPageText.includes("if (!isAtLeastAdmin && (statusToSet === 'APPROVED' || statusToSet === 'PUBLISHED'))"),
+  'ResultsPage enforces Admin-only APPROVED and PUBLISHED guards in both initiate and execute handlers'
+);
+assert(
+  resultsPageText.includes("initiateSaveResults('DRAFT')") &&
+    resultsPageText.includes("initiateSaveResults('SUBMITTED')") &&
+    resultsPageText.includes('{isAtLeastAdmin && (') &&
+    resultsPageText.includes("initiateSaveResults('APPROVED')") &&
+    resultsPageText.includes("initiateSaveResults('PUBLISHED')"),
+  'ResultsPage exposes Draft and Submit for Approval to teachers while gating Approve and Publish behind isAtLeastAdmin'
+);
+
+const gradingServiceText = fs.readFileSync(path.resolve(process.cwd(), 'src/services/gradingProfileService.ts'), 'utf8');
+assert(
+  gradingServiceText.includes('allowAutoSeed: boolean = true'),
+  'gradingProfileService skips admin-only Firestore seeding when allowAutoSeed is false'
 );
 
 const authContextText = fs.readFileSync(path.resolve(process.cwd(), 'src/contexts/AuthContext.tsx'), 'utf8');

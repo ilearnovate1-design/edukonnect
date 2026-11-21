@@ -286,7 +286,13 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
     setEvalSaveError('');
     setEvalSaveSuccess(false);
     try {
-      const activeSchoolId = (schoolId || appUser?.schoolId || student.schoolId || '').trim().toLowerCase();
+      const activeSchoolId = (
+        role === 'TEACHER'
+          ? appUser?.schoolId || schoolId || student.schoolId || ''
+          : schoolId || appUser?.schoolId || student.schoolId || ''
+      )
+        .trim()
+        .toLowerCase();
       if (!activeSchoolId) {
         throw new Error('Cannot save remarks: your account has no active school association.');
       }
