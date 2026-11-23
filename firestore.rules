@@ -13,12 +13,16 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function strLower(val) {
+      return val is string ? val.lower() : '';
+    }
+
     function isNonEmptyId(id) {
       return id is string && id.size() > 0 && id.size() <= 128;
     }
 
     function isValidTenantSchoolId(id) {
-      return isNonEmptyId(id) && id != 'default';
+      return isNonEmptyId(id) && strLower(id) != 'default';
     }
 
     function userEmailLower() {
@@ -56,13 +60,20 @@ service cloud.firestore {
       );
     }
 
+    function isMembershipDataActive(schoolId, mData) {
+      return mData.get('userId', '') == request.auth.uid &&
+        strLower(mData.get('schoolId', '')) == strLower(schoolId) &&
+        mData.get('status', '') == 'ACTIVE';
+    }
+
     function hasActiveMembership(schoolId) {
       return isAuthenticated() &&
         isValidTenantSchoolId(schoolId) &&
         exists(/databases/$(database)/documents/memberships/$(schoolId + '_' + request.auth.uid)) &&
-        get(/databases/$(database)/documents/memberships/$(schoolId + '_' + request.auth.uid)).data.get('userId', '') == request.auth.uid &&
-        get(/databases/$(database)/documents/memberships/$(schoolId + '_' + request.auth.uid)).data.get('schoolId', '') == schoolId &&
-        get(/databases/$(database)/documents/memberships/$(schoolId + '_' + request.auth.uid)).data.get('status', '') == 'ACTIVE';
+        isMembershipDataActive(
+          schoolId,
+          get(/databases/$(database)/documents/memberships/$(schoolId + '_' + request.auth.uid)).data
+        );
     }
 
     function getMembership(schoolId) {
@@ -140,64 +151,117 @@ service cloud.firestore {
       );
     }
 
-    // Teacher & Class/Subject Authorization Helpers (bounded unique reads)
+    // Teacher & Class/Subject Authorization Helpers
+    // (Strict guard order: verify existence BEFORE reading .data; zero eager get() traps)
     function resolveMembershipTeacherId(schoolId) {
-      return getMembership(schoolId).get('teacherId', '') != ''
+      return (hasActiveMembership(schoolId) &&
+        getMembership(schoolId).get('teacherId', '') is string &&
+        getMembership(schoolId).get('teacherId', '') != '')
         ? getMembership(schoolId).get('teacherId', '')
-        : (userExists() ? getUserData().get('teacherId', '') : '');
+        : (userExists() && getUserData().get('teacherId', '') is string
+            ? getUserData().get('teacherId', '')
+            : '');
+    }
+
+    function isTeacherDataOwnedByAuth(schoolId, tData) {
+      return strLower(tData.get('schoolId', '')) == strLower(schoolId) &&
+        tData.get('status', 'ACTIVE') != 'INACTIVE' &&
+        (
+          tData.get('userId', '') == request.auth.uid ||
+          (userEmailLower() != '' && strLower(tData.get('email', '')) == userEmailLower())
+        );
+    }
+
+    function isTeacherDocValidForUser(schoolId, tid) {
+      return isNonEmptyId(tid) &&
+        exists(/databases/$(database)/documents/teachers/$(tid)) &&
+        isTeacherDataOwnedByAuth(schoolId, get(/databases/$(database)/documents/teachers/$(tid)).data);
     }
 
     function isVerifiedActiveTeacher(schoolId) {
-      let tid = resolveMembershipTeacherId(schoolId);
-      let tPath = /databases/$(database)/documents/teachers/$(tid);
       return isSchoolTeacher(schoolId) &&
-        isNonEmptyId(tid) &&
-        exists(tPath) &&
-        get(tPath).data.get('schoolId', '') == schoolId &&
-        get(tPath).data.get('status', 'ACTIVE') != 'INACTIVE' &&
+        isTeacherDocValidForUser(schoolId, resolveMembershipTeacherId(schoolId));
+    }
+
+    function checkTeacherClassAuthData(schoolId, tid, classId, tData, cData) {
+      return strLower(cData.get('schoolId', '')) == strLower(schoolId) &&
         (
-          get(tPath).data.get('userId', '') == request.auth.uid ||
-          (userEmailLower() != '' && get(tPath).data.get('email', '') == userEmailLower())
+          (tData.get('assignedClassIds', []) is list && classId in tData.get('assignedClassIds', [])) ||
+          cData.get('classTeacherId', '') == tid
+        );
+    }
+
+    function isTeacherAuthorizedForClassWithTid(schoolId, tid, classId) {
+      return isNonEmptyId(tid) &&
+        isNonEmptyId(classId) &&
+        exists(/databases/$(database)/documents/teachers/$(tid)) &&
+        exists(/databases/$(database)/documents/classes/$(classId)) &&
+        checkTeacherClassAuthData(
+          schoolId,
+          tid,
+          classId,
+          get(/databases/$(database)/documents/teachers/$(tid)).data,
+          get(/databases/$(database)/documents/classes/$(classId)).data
         );
     }
 
     function isTeacherAuthorizedForClass(schoolId, classId) {
-      let tid = resolveMembershipTeacherId(schoolId);
-      let tData = get(/databases/$(database)/documents/teachers/$(tid)).data;
-      let cPath = /databases/$(database)/documents/classes/$(classId);
-      return isNonEmptyId(classId) &&
-        exists(cPath) &&
-        get(cPath).data.get('schoolId', '') == schoolId &&
-        (
-          classId in tData.get('assignedClassIds', []) ||
-          get(cPath).data.get('classTeacherId', '') == tid
+      return isVerifiedActiveTeacher(schoolId) &&
+        isTeacherAuthorizedForClassWithTid(schoolId, resolveMembershipTeacherId(schoolId), classId);
+    }
+
+    function checkTeacherSubjectAllowed(tData, subjectId, sData) {
+      return !('subjects' in tData) ||
+        tData.subjects == null ||
+        (tData.subjects is list && (
+          tData.subjects.size() == 0 ||
+          subjectId in tData.subjects ||
+          (sData.get('name', '') is string && sData.get('name', '') in tData.subjects)
+        ));
+    }
+
+    function checkTeacherReportAuthData(schoolId, tid, classId, subjectId, tData, cData, sData) {
+      return checkTeacherClassAuthData(schoolId, tid, classId, tData, cData) &&
+        strLower(sData.get('schoolId', '')) == strLower(schoolId) &&
+        checkTeacherSubjectAllowed(tData, subjectId, sData);
+    }
+
+    function isTeacherAuthorizedForReportWithTid(schoolId, tid, classId, subjectId) {
+      return isNonEmptyId(tid) &&
+        isNonEmptyId(classId) &&
+        isNonEmptyId(subjectId) &&
+        exists(/databases/$(database)/documents/teachers/$(tid)) &&
+        exists(/databases/$(database)/documents/classes/$(classId)) &&
+        exists(/databases/$(database)/documents/subjects/$(subjectId)) &&
+        checkTeacherReportAuthData(
+          schoolId,
+          tid,
+          classId,
+          subjectId,
+          get(/databases/$(database)/documents/teachers/$(tid)).data,
+          get(/databases/$(database)/documents/classes/$(classId)).data,
+          get(/databases/$(database)/documents/subjects/$(subjectId)).data
         );
     }
 
     function isTeacherAuthorizedForReport(schoolId, classId, subjectId) {
-      let tid = resolveMembershipTeacherId(schoolId);
-      let tData = get(/databases/$(database)/documents/teachers/$(tid)).data;
-      let sPath = /databases/$(database)/documents/subjects/$(subjectId);
-      let tSubjects = tData.get('subjects', []);
       return isVerifiedActiveTeacher(schoolId) &&
-        isTeacherAuthorizedForClass(schoolId, classId) &&
-        isNonEmptyId(subjectId) &&
-        exists(sPath) &&
-        get(sPath).data.get('schoolId', '') == schoolId &&
-        (
-          tSubjects.size() == 0 ||
-          subjectId in tSubjects ||
-          get(sPath).data.get('name', '') in tSubjects
-        );
+        isTeacherAuthorizedForReportWithTid(schoolId, resolveMembershipTeacherId(schoolId), classId, subjectId);
+    }
+
+    function isResultLockedDoc(data) {
+      return data.get('isLocked', false) == true ||
+        data.get('locked', false) == true ||
+        !(data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED']);
     }
 
     function isAdminValidReportRefs(schoolId, classId, subjectId) {
       return isNonEmptyId(classId) &&
         isNonEmptyId(subjectId) &&
         exists(/databases/$(database)/documents/classes/$(classId)) &&
-        get(/databases/$(database)/documents/classes/$(classId)).data.get('schoolId', '') == schoolId &&
+        strLower(get(/databases/$(database)/documents/classes/$(classId)).data.get('schoolId', '')) == strLower(schoolId) &&
         exists(/databases/$(database)/documents/subjects/$(subjectId)) &&
-        get(/databases/$(database)/documents/subjects/$(subjectId)).data.get('schoolId', '') == schoolId;
+        strLower(get(/databases/$(database)/documents/subjects/$(subjectId)).data.get('schoolId', '')) == strLower(schoolId);
     }
 
     function isAuthorizedNewSchoolMembership(schoolId, userId, role) {
@@ -207,46 +271,53 @@ service cloud.firestore {
         existsAfter(/databases/$(database)/documents/schools/$(schoolId));
     }
 
-    function isAuthorizedInvitationMembership(schoolId, userId, role) {
-      let invId = request.resource.data.get('invitationId', '');
-      let invPath = /databases/$(database)/documents/invitations/$(invId);
-      return request.auth.uid == userId &&
-        isNonEmptyId(invId) &&
-        exists(invPath) &&
-        get(invPath).data.get('schoolId', '') == schoolId &&
-        get(invPath).data.get('role', '') == role &&
-        get(invPath).data.get('status', '') == 'PENDING' &&
+    function checkInvitationDataMatch(schoolId, role, invData) {
+      return strLower(invData.get('schoolId', '')) == strLower(schoolId) &&
+        invData.get('role', '') == role &&
+        invData.get('status', '') == 'PENDING' &&
         userEmailLower() != '' &&
-        get(invPath).data.get('email', '') == userEmailLower();
+        strLower(invData.get('email', '')) == userEmailLower();
+    }
+
+    function isAuthorizedInvitationMembership(schoolId, userId, role) {
+      return request.auth.uid == userId &&
+        isNonEmptyId(request.resource.data.get('invitationId', '')) &&
+        exists(/databases/$(database)/documents/invitations/$(request.resource.data.get('invitationId', ''))) &&
+        checkInvitationDataMatch(
+          schoolId,
+          role,
+          get(/databases/$(database)/documents/invitations/$(request.resource.data.get('invitationId', ''))).data
+        );
     }
 
     function isAuthorizedLegacyTeacherMembership(schoolId, userId, role) {
-      let tid = request.resource.data.get('teacherId', '');
-      let tPath = /databases/$(database)/documents/teachers/$(tid);
       return request.auth.uid == userId &&
         role == 'TEACHER' &&
-        isNonEmptyId(tid) &&
-        exists(tPath) &&
-        get(tPath).data.get('schoolId', '') == schoolId &&
-        get(tPath).data.get('status', 'ACTIVE') != 'INACTIVE' &&
+        isNonEmptyId(request.resource.data.get('teacherId', '')) &&
+        exists(/databases/$(database)/documents/teachers/$(request.resource.data.get('teacherId', ''))) &&
+        isTeacherDataOwnedByAuth(
+          schoolId,
+          get(/databases/$(database)/documents/teachers/$(request.resource.data.get('teacherId', ''))).data
+        );
+    }
+
+    function isParentDataOwnedByAuth(schoolId, pData) {
+      return strLower(pData.get('schoolId', '')) == strLower(schoolId) &&
+        pData.get('status', 'ACTIVE') != 'INACTIVE' &&
         (
-          get(tPath).data.get('userId', '') == request.auth.uid ||
-          (userEmailLower() != '' && get(tPath).data.get('email', '') == userEmailLower())
+          pData.get('userId', '') == request.auth.uid ||
+          (userEmailLower() != '' && strLower(pData.get('email', '')) == userEmailLower())
         );
     }
 
     function isAuthorizedLegacyParentMembership(schoolId, userId, role) {
-      let pid = request.resource.data.get('parentId', '');
-      let pPath = /databases/$(database)/documents/parents/$(pid);
       return request.auth.uid == userId &&
         role == 'PARENT' &&
-        isNonEmptyId(pid) &&
-        exists(pPath) &&
-        get(pPath).data.get('schoolId', '') == schoolId &&
-        get(pPath).data.get('status', 'ACTIVE') != 'INACTIVE' &&
-        (
-          get(pPath).data.get('userId', '') == request.auth.uid ||
-          (userEmailLower() != '' && get(pPath).data.get('email', '') == userEmailLower())
+        isNonEmptyId(request.resource.data.get('parentId', '')) &&
+        exists(/databases/$(database)/documents/parents/$(request.resource.data.get('parentId', ''))) &&
+        isParentDataOwnedByAuth(
+          schoolId,
+          get(/databases/$(database)/documents/parents/$(request.resource.data.get('parentId', ''))).data
         );
     }
 
@@ -255,7 +326,7 @@ service cloud.firestore {
         role == 'ADMIN' &&
         userExists() &&
         getUserData().get('role', '') == 'ADMIN' &&
-        getUserData().get('schoolId', '') == schoolId;
+        strLower(getUserData().get('schoolId', '')) == strLower(schoolId);
     }
 
     // =========================================================================
@@ -333,7 +404,7 @@ service cloud.firestore {
         request.resource.data.get('status', '') == 'ACCEPTED' &&
         request.resource.data.get('acceptedBy', '') == request.auth.uid &&
         userEmailLower() != '' &&
-        resource.data.get('email', '') == userEmailLower() &&
+        strLower(resource.data.get('email', '')) == userEmailLower() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedAt', 'acceptedBy', 'updatedAt'])
       );
       allow delete: if isSuperAdmin() || (
@@ -345,7 +416,7 @@ service cloud.firestore {
       allow get: if isAuthenticated() && (
         isSuperAdmin() ||
         resource.data.get('userId', '') == request.auth.uid ||
-        (userEmailLower() != '' && resource.data.get('userEmail', '') == userEmailLower()) ||
+        (userEmailLower() != '' && strLower(resource.data.get('userEmail', '')) == userEmailLower()) ||
         (('schoolId' in resource.data) && isSchoolAdmin(resource.data.schoolId))
       );
       allow list: if isAuthenticated() && (
@@ -380,6 +451,27 @@ service cloud.firestore {
           request.resource.data.get('schoolId', '') == resource.data.schoolId &&
           request.resource.data.get('userId', '') == resource.data.get('userId', '') &&
           request.resource.data.get('role', '') in ['ADMIN', 'TEACHER', 'PARENT']
+        ) || (
+          // Self-healing link backfill ONLY: role, status, schoolId, and userId remain immutable
+          ('schoolId' in resource.data) &&
+          isValidTenantSchoolId(resource.data.schoolId) &&
+          membershipId == resource.data.schoolId + '_' + request.auth.uid &&
+          resource.data.get('userId', '') == request.auth.uid &&
+          resource.data.get('status', '') == 'ACTIVE' &&
+          request.resource.data.get('schoolId', '') == resource.data.schoolId &&
+          request.resource.data.get('userId', '') == resource.data.get('userId', '') &&
+          request.resource.data.get('role', '') == resource.data.get('role', '') &&
+          request.resource.data.get('status', '') == resource.data.get('status', '') && (
+            (
+              resource.data.get('role', '') == 'TEACHER' &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['teacherId', 'updatedAt']) &&
+              isAuthorizedLegacyTeacherMembership(resource.data.schoolId, request.auth.uid, 'TEACHER')
+            ) || (
+              resource.data.get('role', '') == 'PARENT' &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['parentId', 'updatedAt']) &&
+              isAuthorizedLegacyParentMembership(resource.data.schoolId, request.auth.uid, 'PARENT')
+            )
+          )
         )
       );
       allow delete: if isSuperAdmin() || (
@@ -494,7 +586,7 @@ service cloud.firestore {
             isSchoolStaff(resource.data.schoolId) || (
               isSchoolParent(resource.data.schoolId) && (
                 resource.data.get('userId', '') == request.auth.uid ||
-                (userEmailLower() != '' && resource.data.get('email', '') == userEmailLower())
+                (userEmailLower() != '' && strLower(resource.data.get('email', '')) == userEmailLower())
               )
             )
           )
@@ -512,9 +604,12 @@ service cloud.firestore {
         isValidTenantSchoolId(resource.data.schoolId) &&
         request.resource.data.get('schoolId', '') == resource.data.schoolId &&
         userEmailLower() != '' &&
-        resource.data.get('email', '') == userEmailLower() &&
+        strLower(resource.data.get('email', '')) == userEmailLower() &&
         request.resource.data.get('userId', '') == request.auth.uid &&
-        existsAfter(/databases/$(database)/documents/memberships/$(resource.data.schoolId + '_' + request.auth.uid)) &&
+        (
+          hasActiveMembership(resource.data.schoolId) ||
+          existsAfter(/databases/$(database)/documents/memberships/$(resource.data.schoolId + '_' + request.auth.uid))
+        ) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['userId', 'updatedAt'])
       );
       allow delete: if canDeleteAsSchoolAdmin();
@@ -524,7 +619,7 @@ service cloud.firestore {
       allow get: if isAuthenticated() && (
         docMatchesTenant(resource.data) ||
         resource.data.get('userId', '') == request.auth.uid ||
-        (userEmailLower() != '' && resource.data.get('email', '') == userEmailLower())
+        (userEmailLower() != '' && strLower(resource.data.get('email', '')) == userEmailLower())
       );
       allow list: if isAuthenticated() && (
         docMatchesTenant(resource.data) ||
@@ -538,9 +633,12 @@ service cloud.firestore {
         isValidTenantSchoolId(resource.data.schoolId) &&
         request.resource.data.get('schoolId', '') == resource.data.schoolId &&
         userEmailLower() != '' &&
-        resource.data.get('email', '') == userEmailLower() &&
+        strLower(resource.data.get('email', '')) == userEmailLower() &&
         request.resource.data.get('userId', '') == request.auth.uid &&
-        existsAfter(/databases/$(database)/documents/memberships/$(resource.data.schoolId + '_' + request.auth.uid)) &&
+        (
+          hasActiveMembership(resource.data.schoolId) ||
+          existsAfter(/databases/$(database)/documents/memberships/$(resource.data.schoolId + '_' + request.auth.uid))
+        ) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['userId', 'status', 'updatedAt'])
       );
       allow delete: if canDeleteAsSchoolAdmin();
@@ -642,10 +740,14 @@ service cloud.firestore {
               ) &&
               request.resource.data.get('teacherId', '') == request.auth.uid &&
               request.resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED'] &&
+              request.resource.data.get('isLocked', false) == false &&
+              request.resource.data.get('locked', false) == false &&
               !('approvedBy' in request.resource.data) &&
               !('approvedAt' in request.resource.data) &&
               !('publishedBy' in request.resource.data) &&
               !('publishedAt' in request.resource.data) &&
+              !('lockedBy' in request.resource.data) &&
+              !('lockedAt' in request.resource.data) &&
               (
                 request.resource.data.get('status', 'DRAFT') != 'SUBMITTED' ||
                 request.resource.data.get('submittedBy', '') == request.auth.uid
@@ -675,15 +777,18 @@ service cloud.firestore {
                 resource.data.get('classId', ''),
                 resource.data.get('subjectId', '')
               ) &&
-              resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED'] &&
+              !isResultLockedDoc(resource.data) &&
               request.resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED'] &&
+              request.resource.data.get('isLocked', false) == false &&
+              request.resource.data.get('locked', false) == false &&
               (
                 resource.data.get('teacherId', '') == request.auth.uid ||
+                resource.data.get('teacherId', '') == resolveMembershipTeacherId(resource.data.schoolId) ||
                 resource.data.get('teacherId', '') == ''
               ) &&
               request.resource.data.get('teacherId', '') == request.auth.uid &&
               !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-                'approvedBy', 'approvedAt', 'publishedBy', 'publishedAt'
+                'approvedBy', 'approvedAt', 'publishedBy', 'publishedAt', 'lockedBy', 'lockedAt'
               ]) &&
               (
                 request.resource.data.get('status', 'DRAFT') != 'SUBMITTED' ||

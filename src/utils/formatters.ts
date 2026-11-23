@@ -175,7 +175,8 @@ export const logAudit = async (
   entityType: string,
   entityId: string,
   description: string,
-  schoolId: string = ''
+  schoolId: string = '',
+  options?: { throwOnError?: boolean }
 ) => {
   const cleanSchool = (schoolId || '').trim().toLowerCase();
   if (!cleanSchool) {
@@ -194,5 +195,8 @@ export const logAudit = async (
     });
   } catch (err) {
     console.error('Failed to write audit log:', err);
+    if (options?.throwOnError) {
+      throw err;
+    }
   }
 };

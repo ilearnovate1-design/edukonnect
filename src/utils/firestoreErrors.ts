@@ -61,21 +61,39 @@ export function handleFirestoreError(
   throw new Error(serialized);
 }
 
-export function formatFriendlyFirestoreError(err: unknown, fallback = 'Operation failed.'): string {
+export function formatFriendlyFirestoreError(
+  err: unknown,
+  fallback = 'Operation failed.',
+  diagnosticCode?: string
+): string {
+  const isDev = typeof import.meta !== 'undefined' && Boolean((import.meta as any).env?.DEV);
+  const codePrefix = isDev && diagnosticCode ? `[${diagnosticCode}] ` : '';
   const raw = err instanceof Error ? err.message : String(err || '');
+
   try {
     const parsed = JSON.parse(raw) as FirestoreErrorInfo;
     if (parsed && typeof parsed.error === 'string') {
-      if (parsed.error.toLowerCase().includes('missing or insufficient permissions') || parsed.error.includes('permission-denied')) {
-        return `Missing or insufficient permissions for ${parsed.operationType} on ${parsed.path || 'record'}. Verify your school membership, class/subject assignment, or report status.`;
+      if (
+        parsed.error.toLowerCase().includes('missing or insufficient permissions') ||
+        parsed.error.includes('permission-denied')
+      ) {
+        if (isDev) {
+          return `${codePrefix}Permission denied during ${parsed.operationType} on ${parsed.path || 'record'}. Verify active school membership, class/subject assignment, and report lock status.`;
+        }
+        return `Unable to ${fallback}. You do not have permission for this school, class, subject, or locked report.`;
       }
-      return parsed.error;
+      return `${codePrefix}${parsed.error}`;
     }
   } catch {
     // Non-JSON error message
   }
+
   if (raw.toLowerCase().includes('missing or insufficient permissions') || raw.includes('permission-denied')) {
-    return 'Missing or insufficient permissions. Please verify your active school membership, class/subject authorization, and report lock status.';
+    if (isDev) {
+      return `${codePrefix}Missing or insufficient permissions. Please verify your active school membership, class/subject authorization, and report lock status.`;
+    }
+    return `Unable to ${fallback}. Please check that you are assigned to this class and subject, and that the report has not been locked.`;
   }
-  return raw || fallback;
+
+  return raw ? `${codePrefix}${raw}` : fallback;
 }

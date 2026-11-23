@@ -268,8 +268,11 @@ export interface Result {
   isMissingAny?: boolean;
   isIncomplete?: boolean;
   
-  // Workflow status
+  // Workflow status & locking
   status: ResultStatus;
+  isLocked?: boolean;
+  lockedBy?: string;
+  lockedAt?: any;
   
   // Approvals & audit trail
   submittedBy?: string;

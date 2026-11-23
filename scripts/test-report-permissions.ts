@@ -1,15 +1,22 @@
 /**
  * Phase 6 Security & Workflow Test Suite:
- * Verifies Firestore Security Rules logic and multi-tenant report workflow boundaries
- * across all 12 required scenarios.
+ * Verifies Firestore Security Rules logic, report locking invariants,
+ * multi-tenant report workflow boundaries, and granular diagnostic codes
+ * across two separate schools (12 required scenarios + regression checks).
  *
  * Note: Because the container environment does not have a Java JRE installed
  * for local Firebase Emulator execution, this suite faithfully evaluates the
- * exact rule predicates implemented in /firestore.rules alongside the client
- * validation invariants enforced in ResultsPage.tsx & evaluationService.ts.
+ * exact rule predicates implemented in /firestore.rules alongside the live
+ * TypeScript helpers in src/services/reportAuthorizationService.ts.
  */
 
-type Role = 'ADMIN' | 'TEACHER' | 'PARENT' | 'SUPER_ADMIN';
+import {
+  evaluateReportConditionsSync,
+  formatReportWriteFailure,
+  isResultRecordLocked,
+} from '../src/services/reportAuthorizationService';
+import { SchoolClass, SchoolMembership, Subject, Teacher } from '../src/types';
+
 type ReportStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'PUBLISHED';
 
 interface AuthContext {
@@ -62,6 +69,10 @@ interface ResultDoc {
   totalScore: number;
   grade: string;
   status: ReportStatus;
+  isLocked?: boolean;
+  locked?: boolean;
+  lockedBy?: string;
+  lockedAt?: string;
   submittedBy?: string;
   submittedAt?: string;
   approvedBy?: string;
@@ -77,17 +88,32 @@ const classes = new Map<string, ClassDoc>();
 const subjects = new Map<string, SubjectDoc>();
 const results = new Map<string, ResultDoc>();
 
-// Exact mirror of /firestore.rules helper predicates
+const strLower = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
+
+// Exact mirror of /firestore.rules helper predicates (including case-normalization & lock gates)
 function isValidTenantSchoolId(id: unknown): id is string {
-  return typeof id === 'string' && id.length > 0 && id.length <= 128 && id !== 'default';
+  return typeof id === 'string' && id.length > 0 && id.length <= 128 && strLower(id) !== 'default';
 }
 
 function hasActiveMembership(auth: AuthContext | null, schoolId: string): MembershipDoc | null {
   if (!auth || !isValidTenantSchoolId(schoolId)) return null;
   const m = memberships.get(`${schoolId}_${auth.uid}`);
   if (!m) return null;
-  if (m.userId !== auth.uid || m.schoolId !== schoolId || m.status !== 'ACTIVE') return null;
+  if (m.userId !== auth.uid || strLower(m.schoolId) !== strLower(schoolId) || m.status !== 'ACTIVE') return null;
   return m;
+}
+
+function isResultLockedDoc(data: ResultDoc): boolean {
+  return (
+    data.isLocked === true ||
+    data.locked === true ||
+    !['DRAFT', 'SUBMITTED'].includes(data.status || 'DRAFT')
+  );
+}
+
+function resolveMembershipTeacherId(auth: AuthContext, schoolId: string): string {
+  const m = hasActiveMembership(auth, schoolId);
+  return m?.teacherId || '';
 }
 
 function isTeacherAuthorizedForReport(
@@ -99,22 +125,23 @@ function isTeacherAuthorizedForReport(
   const m = hasActiveMembership(auth, schoolId);
   if (!m || m.role !== 'TEACHER') return false;
 
-  const tid = m.teacherId || '';
+  const tid = resolveMembershipTeacherId(auth, schoolId);
   if (!tid) return false;
   const tData = teachers.get(tid);
   if (!tData) return false;
-  if (tData.schoolId !== schoolId || tData.status === 'INACTIVE') return false;
-  if (tData.userId !== auth.uid && tData.email.toLowerCase() !== auth.email.toLowerCase()) return false;
+  if (strLower(tData.schoolId) !== strLower(schoolId) || tData.status === 'INACTIVE') return false;
+  if (tData.userId !== auth.uid && strLower(tData.email) !== strLower(auth.email)) return false;
 
   const cData = classes.get(classId);
-  if (!cData || cData.schoolId !== schoolId) return false;
+  if (!cData || strLower(cData.schoolId) !== strLower(schoolId)) return false;
   const classAuthorized =
-    tData.assignedClassIds.includes(classId) || cData.classTeacherId === tid;
+    (Array.isArray(tData.assignedClassIds) && tData.assignedClassIds.includes(classId)) ||
+    cData.classTeacherId === tid;
   if (!classAuthorized) return false;
 
   const sData = subjects.get(subjectId);
-  if (!sData || sData.schoolId !== schoolId) return false;
-  if (tData.subjects.length > 0) {
+  if (!sData || strLower(sData.schoolId) !== strLower(schoolId)) return false;
+  if (Array.isArray(tData.subjects) && tData.subjects.length > 0) {
     if (!tData.subjects.includes(subjectId) && !tData.subjects.includes(sData.name)) {
       return false;
     }
@@ -144,10 +171,10 @@ function canCreateResult(
 
   const cData = classes.get(reqData.classId);
   const sData = subjects.get(reqData.subjectId);
-  if (!cData || cData.schoolId !== reqData.schoolId) {
+  if (!cData || strLower(cData.schoolId) !== strLower(reqData.schoolId)) {
     return { allowed: false, reason: 'Class does not belong to school' };
   }
-  if (!sData || sData.schoolId !== reqData.schoolId) {
+  if (!sData || strLower(sData.schoolId) !== strLower(reqData.schoolId)) {
     return { allowed: false, reason: 'Subject does not belong to school' };
   }
 
@@ -167,8 +194,18 @@ function canCreateResult(
     if (!['DRAFT', 'SUBMITTED'].includes(reqData.status)) {
       return { allowed: false, reason: 'Teachers cannot approve or publish reports' };
     }
-    if (reqData.approvedBy || reqData.approvedAt || reqData.publishedBy || reqData.publishedAt) {
-      return { allowed: false, reason: 'Teachers cannot set approval/publication metadata' };
+    if (reqData.isLocked === true || reqData.locked === true) {
+      return { allowed: false, reason: 'Teachers cannot set premature lock flags' };
+    }
+    if (
+      reqData.approvedBy ||
+      reqData.approvedAt ||
+      reqData.publishedBy ||
+      reqData.publishedAt ||
+      reqData.lockedBy ||
+      reqData.lockedAt
+    ) {
+      return { allowed: false, reason: 'Teachers cannot set approval/publication/lock metadata' };
     }
     if (reqData.status === 'SUBMITTED' && reqData.submittedBy !== auth.uid) {
       return { allowed: false, reason: 'submittedBy must match authenticated UID' };
@@ -213,13 +250,17 @@ function canUpdateResult(
     if (!isTeacherAuthorizedForReport(auth, existing.schoolId, existing.classId, existing.subjectId)) {
       return { allowed: false, reason: 'Teacher not authorized for class/subject' };
     }
-    if (!['DRAFT', 'SUBMITTED'].includes(existing.status)) {
-      return { allowed: false, reason: 'Cannot modify approved or published report' };
+    if (isResultLockedDoc(existing)) {
+      return { allowed: false, reason: 'Cannot modify approved, published, or locked report' };
     }
     if (!['DRAFT', 'SUBMITTED'].includes(nextData.status)) {
       return { allowed: false, reason: 'Teachers cannot approve or publish reports' };
     }
-    if (existing.teacherId && existing.teacherId !== auth.uid) {
+    if (nextData.isLocked === true || nextData.locked === true) {
+      return { allowed: false, reason: 'Teachers cannot lock or unlock reports' };
+    }
+    const tid = resolveMembershipTeacherId(auth, existing.schoolId);
+    if (existing.teacherId && existing.teacherId !== auth.uid && existing.teacherId !== tid) {
       return { allowed: false, reason: 'Cannot modify another teacher report' };
     }
     if (nextData.teacherId !== auth.uid) {
@@ -229,9 +270,11 @@ function canUpdateResult(
       nextData.approvedBy !== existing.approvedBy ||
       nextData.approvedAt !== existing.approvedAt ||
       nextData.publishedBy !== existing.publishedBy ||
-      nextData.publishedAt !== existing.publishedAt
+      nextData.publishedAt !== existing.publishedAt ||
+      nextData.lockedBy !== existing.lockedBy ||
+      nextData.lockedAt !== existing.lockedAt
     ) {
-      return { allowed: false, reason: 'Teachers cannot modify approval/publication metadata' };
+      return { allowed: false, reason: 'Teachers cannot modify approval/publication/lock metadata' };
     }
     if (nextData.status === 'SUBMITTED' && nextData.submittedBy !== auth.uid) {
       return { allowed: false, reason: 'submittedBy must match authenticated UID' };
@@ -242,10 +285,12 @@ function canUpdateResult(
   return { allowed: false, reason: 'Parents cannot update student reports' };
 }
 
-// Seed Test Data
+// Seed Test Data across TWO separate schools
 const authTeacherA: AuthContext = { uid: 'uid_teacher_a', email: 'teacher.a@schoola.edu' };
 const authTeacherA2: AuthContext = { uid: 'uid_teacher_a2', email: 'teacher.a2@schoola.edu' };
 const authTeacherNoMembership: AuthContext = { uid: 'uid_teacher_orphan', email: 'orphan@schoola.edu' };
+const authTeacherMissingTid: AuthContext = { uid: 'uid_teacher_missing_tid', email: 'notid@schoola.edu' };
+const authTeacherMixedCase: AuthContext = { uid: 'uid_teacher_mixed', email: 'mixed@schoola.edu' };
 const authTeacherWrongSchool: AuthContext = { uid: 'uid_teacher_wrong', email: 'wrong@schoolb.edu' };
 const authAdminA: AuthContext = { uid: 'uid_admin_a', email: 'admin@schoola.edu' };
 const authParentA: AuthContext = { uid: 'uid_parent_a', email: 'parent@schoola.edu' };
@@ -265,6 +310,22 @@ memberships.set('school-a_uid_teacher_a2', {
   role: 'TEACHER',
   status: 'ACTIVE',
   teacherId: 'tch_a2',
+});
+memberships.set('school-a_uid_teacher_missing_tid', {
+  id: 'school-a_uid_teacher_missing_tid',
+  userId: 'uid_teacher_missing_tid',
+  schoolId: 'school-a',
+  role: 'TEACHER',
+  status: 'ACTIVE',
+  // teacherId intentionally missing
+});
+memberships.set('school-a_uid_teacher_mixed', {
+  id: 'school-a_uid_teacher_mixed',
+  userId: 'uid_teacher_mixed',
+  schoolId: 'school-a',
+  role: 'TEACHER',
+  status: 'ACTIVE',
+  teacherId: 'tch_a_mixed',
 });
 memberships.set('school-b_uid_teacher_wrong', {
   id: 'school-b_uid_teacher_wrong',
@@ -308,6 +369,14 @@ teachers.set('tch_a2', {
   subjects: ['sub_a_eng'],
   status: 'ACTIVE',
 });
+teachers.set('tch_a_mixed', {
+  teacherId: 'tch_a_mixed',
+  schoolId: 'School-A',
+  email: 'Mixed@SchoolA.Edu',
+  assignedClassIds: ['cls_a_pry1'],
+  subjects: [], // Class teacher scope
+  status: 'ACTIVE',
+});
 teachers.set('tch_b_wrong', {
   teacherId: 'tch_b_wrong',
   schoolId: 'school-b',
@@ -337,7 +406,7 @@ function assert(cond: boolean, name: string, detail?: string) {
   }
 }
 
-console.log('--- PHASE 6: REPORT SECURITY RULES & WORKFLOW VERIFICATION ---\n');
+console.log('--- PHASE 6: REPORT SECURITY RULES, LOCKING & DIAGNOSTIC VERIFICATION ---\n');
 
 // 1. Teacher A can save a draft for an assigned class in School A
 const draftA: ResultDoc = {
@@ -352,6 +421,7 @@ const draftA: ResultDoc = {
   totalScore: 84,
   grade: 'A',
   status: 'DRAFT',
+  isLocked: false,
 };
 const res1 = canCreateResult(authTeacherA, draftA);
 assert(res1.allowed === true, '1. Teacher A can save DRAFT for assigned class & subject in School A', res1.reason);
@@ -361,6 +431,7 @@ if (res1.allowed) results.set(draftA.resultId, draftA);
 const submittedA: ResultDoc = {
   ...draftA,
   status: 'SUBMITTED',
+  isLocked: false,
   submittedBy: authTeacherA.uid,
   submittedAt: '2026-11-23T08:00:00Z',
 };
@@ -407,8 +478,11 @@ assert(res5a.allowed === false && res5b.allowed === false, '5. Teacher A CANNOT 
 const approvedByAdminA: ResultDoc = {
   ...submittedA,
   status: 'APPROVED',
+  isLocked: true,
   approvedBy: authAdminA.uid,
   approvedAt: '2026-11-23T09:00:00Z',
+  lockedBy: authAdminA.uid,
+  lockedAt: '2026-11-23T09:00:00Z',
 };
 const res6 = canUpdateResult(authAdminA, submittedA, approvedByAdminA);
 assert(res6.allowed === true, '6. School A Admin CAN approve eligible reports in School A', res6.reason);
@@ -447,15 +521,30 @@ const res10create = canCreateResult(authParentA, { ...draftA, resultId: 'res_par
 const res10update = canUpdateResult(authParentA, approvedByAdminA, { ...approvedByAdminA, totalScore: 100 });
 assert(res10create.allowed === false && res10update.allowed === false, '10. Parent CANNOT create or modify student reports');
 
-// 11. A teacher cannot alter schoolId, ownership or other protected fields during an update
-const freshDraft: ResultDoc = { ...draftA, resultId: 'res_stu2_sub_a_math' };
+// 11. A teacher cannot alter schoolId, ownership, lock flags, or protected fields during an update
+const freshDraft: ResultDoc = { ...draftA, resultId: 'res_stu2_sub_a_math', isLocked: false };
 const res11school = canUpdateResult(authTeacherA, freshDraft, { ...freshDraft, schoolId: 'school-b' });
 const res11owner = canUpdateResult(authTeacherA, freshDraft, { ...freshDraft, teacherId: authTeacherA2.uid });
 const res11approvedMeta = canUpdateResult(authTeacherA, freshDraft, { ...freshDraft, approvedBy: authTeacherA.uid });
 const res11postApproval = canUpdateResult(authTeacherA, approvedByAdminA, { ...approvedByAdminA, totalScore: 99 });
+const res11unlockAttempt = canUpdateResult(authTeacherA, approvedByAdminA, {
+  ...approvedByAdminA,
+  status: 'DRAFT',
+  isLocked: false,
+});
+const res11explicitLock = canUpdateResult(
+  authTeacherA,
+  { ...freshDraft, isLocked: true },
+  { ...freshDraft, isLocked: false, totalScore: 95 }
+);
 assert(
-  !res11school.allowed && !res11owner.allowed && !res11approvedMeta.allowed && !res11postApproval.allowed,
-  '11. Teacher CANNOT alter schoolId, teacherId ownership, approval metadata, or approved reports'
+  !res11school.allowed &&
+    !res11owner.allowed &&
+    !res11approvedMeta.allowed &&
+    !res11postApproval.allowed &&
+    !res11unlockAttempt.allowed &&
+    !res11explicitLock.allowed,
+  '11. Teacher CANNOT alter schoolId, ownership, approval metadata, locked/approved reports, or unlock via client'
 );
 
 // 12. Existing report records can still be read according to their authorised permissions
@@ -467,6 +556,251 @@ const read12CrossSchool = canReadResult(authTeacherWrongSchool, publishedA);
 assert(
   read12TeacherOwn && read12ParentPublished && !read12ParentDraft && !read12CrossSchool,
   '12. Authorized reads succeed (staff sees school reports, parent sees PUBLISHED only, cross-school denied)'
+);
+
+// Regression Checks for Root Causes Identified in Trace
+console.log('\n--- REGRESSION CHECKS (RULE GUARDS, LEGACY DOCS, LOCKING & DIAGNOSTICS) ---\n');
+
+const resMissingTid = canCreateResult(authTeacherMissingTid, {
+  ...draftA,
+  teacherId: authTeacherMissingTid.uid,
+});
+assert(
+  resMissingTid.allowed === false,
+  'R1. Missing teacherId on membership fails closed cleanly without evaluation crash'
+);
+
+const resMixedCaseTeacher = canCreateResult(authTeacherMixedCase, {
+  ...draftA,
+  resultId: 'res_mixed_case_teacher',
+  teacherId: authTeacherMixedCase.uid,
+});
+assert(
+  resMixedCaseTeacher.allowed === true,
+  'R2. Legacy teacher record with mixed-case email/schoolId and class-teacher scope saves & submits cleanly',
+  resMixedCaseTeacher.reason
+);
+
+const legacySeededDraft: ResultDoc = {
+  ...draftA,
+  resultId: 'res_legacy_seeded',
+  teacherId: 'tch_a1', // Teacher document ID instead of Auth UID
+};
+const resLegacyUpdate = canUpdateResult(authTeacherA, legacySeededDraft, {
+  ...legacySeededDraft,
+  teacherId: authTeacherA.uid,
+  status: 'SUBMITTED',
+  submittedBy: authTeacherA.uid,
+});
+assert(
+  resLegacyUpdate.allowed === true,
+  'R3. Legacy report carrying matching teacher doc ID (tch_a1) can be updated & normalized to auth.uid',
+  resLegacyUpdate.reason
+);
+
+// Locking Source-of-Truth Checks (Step 6)
+assert(
+  !isResultRecordLocked({ status: 'DRAFT' }, authTeacherA.uid, 'tch_a1', false).locked &&
+    !isResultRecordLocked({ status: 'SUBMITTED' }, authTeacherA.uid, 'tch_a1', false).locked &&
+    !isResultRecordLocked({ status: 'DRAFT', isLocked: false }, authTeacherA.uid, 'tch_a1', false).locked,
+  'R4. Draft and Submitted reports (with or without missing lock field) are NOT prematurely locked'
+);
+
+assert(
+  isResultRecordLocked({ status: 'APPROVED' }, authTeacherA.uid, 'tch_a1', false).locked &&
+    isResultRecordLocked({ status: 'PUBLISHED' }, authTeacherA.uid, 'tch_a1', false).locked &&
+    isResultRecordLocked({ status: 'DRAFT', isLocked: true }, authTeacherA.uid, 'tch_a1', false).locked &&
+    isResultRecordLocked({ status: 'DRAFT', locked: true }, authTeacherA.uid, 'tch_a1', false).locked &&
+    isResultRecordLocked({ status: 'UNKNOWN_STATE' as any }, authTeacherA.uid, 'tch_a1', false).locked,
+  'R5. Approved, Published, explicitly locked (isLocked/locked), and unknown-status reports are locked for teachers'
+);
+
+// Diagnostic Codes Verification (Step 3 / Conditions A-L)
+const liveClassA: SchoolClass = {
+  classId: 'cls_a_pry1',
+  schoolId: 'school-a',
+  name: 'Primary 1',
+  academicSession: '2026/2027',
+  createdAt: null,
+  updatedAt: null,
+};
+const liveSubjectMath: Subject = {
+  subjectId: 'sub_a_math',
+  schoolId: 'school-a',
+  name: 'Mathematics',
+  active: true,
+  createdAt: null,
+  updatedAt: null,
+};
+const liveSubjectEng: Subject = {
+  subjectId: 'sub_a_eng',
+  schoolId: 'school-a',
+  name: 'English',
+  active: true,
+  createdAt: null,
+  updatedAt: null,
+};
+const liveMemA: SchoolMembership = {
+  id: 'school-a_uid_teacher_a',
+  userId: authTeacherA.uid,
+  userEmail: authTeacherA.email,
+  schoolId: 'school-a',
+  role: 'TEACHER',
+  status: 'ACTIVE',
+  teacherId: 'tch_a1',
+  createdAt: null,
+  updatedAt: null,
+};
+const liveTeacherA: Teacher = {
+  teacherId: 'tch_a1',
+  schoolId: 'school-a',
+  userId: authTeacherA.uid,
+  firstName: 'Ada',
+  lastName: 'Okonjo',
+  phone: '0800',
+  email: authTeacherA.email,
+  assignedClassIds: ['cls_a_pry1'],
+  subjects: ['sub_a_math'],
+  status: 'ACTIVE',
+  createdAt: null,
+  updatedAt: null,
+};
+
+const diagMemMissing = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  membership: null,
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'DRAFT',
+});
+
+const diagSchoolMismatch = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-b',
+  membership: liveMemA,
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'DRAFT',
+});
+
+const diagClassMissing = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  membership: liveMemA,
+  teacherProfile: { ...liveTeacherA, assignedClassIds: [] },
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'DRAFT',
+});
+
+const diagSubjectMissing = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  membership: liveMemA,
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectEng,
+  targetStatus: 'DRAFT',
+});
+
+const diagLocked = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  membership: liveMemA,
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'SUBMITTED',
+  existingResults: [{ status: 'APPROVED', isLocked: true }],
+});
+
+const diagInvalidTransition = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  membership: liveMemA,
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'PUBLISHED',
+});
+
+const diagRulesDenied = formatReportWriteFailure(
+  new Error('FirebaseError: Missing or insufficient permissions'),
+  'REPORT_WRITE',
+  'submit'
+);
+const diagRelatedDenied = formatReportWriteFailure(
+  new Error('FirebaseError: Missing or insufficient permissions'),
+  'RELATED_WRITE',
+  'submit'
+);
+
+assert(
+  diagMemMissing.diagnosticCode === 'MEMBERSHIP_MISSING' &&
+    diagSchoolMismatch.diagnosticCode === 'SCHOOL_ID_MISMATCH' &&
+    diagClassMissing.diagnosticCode === 'CLASS_ASSIGNMENT_MISSING' &&
+    diagSubjectMissing.diagnosticCode === 'SUBJECT_ASSIGNMENT_MISSING' &&
+    diagLocked.diagnosticCode === 'REPORT_LOCKED' &&
+    diagInvalidTransition.diagnosticCode === 'INVALID_STATUS_TRANSITION' &&
+    diagRulesDenied.code === 'FIRESTORE_RULES_DENIED' &&
+    diagRelatedDenied.code === 'RELATED_WRITE_DENIED',
+  'R6. All 8 granular diagnostic codes (MEMBERSHIP_MISSING..RELATED_WRITE_DENIED) emit accurately per condition'
+);
+
+const diagSuccess = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  membership: liveMemA,
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'SUBMITTED',
+  existingResults: [{ status: 'DRAFT', isLocked: false, teacherId: authTeacherA.uid }],
+});
+assert(
+  diagSuccess.authorized === true &&
+    diagSuccess.conditions.A?.passed === true &&
+    diagSuccess.conditions.B?.passed === true &&
+    diagSuccess.conditions.C?.passed === true &&
+    diagSuccess.conditions.D?.passed === true &&
+    diagSuccess.conditions.E?.passed === true &&
+    diagSuccess.conditions.F?.passed === true &&
+    diagSuccess.conditions.G?.passed === true &&
+    diagSuccess.conditions.H?.passed === true &&
+    diagSuccess.conditions.I?.passed === true &&
+    diagSuccess.conditions.J?.passed === true,
+  'R7. Authorized teacher passes all Conditions A–J cleanly'
 );
 
 console.log('\n========================================');

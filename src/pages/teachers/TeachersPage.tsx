@@ -59,7 +59,9 @@ export const TeachersPage: React.FC = () => {
   const [copiedCode, setCopiedCode] = useState(false);
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    const cleanItem = (itemSchoolId || '').trim().toLowerCase();
+    return cleanItem ? cleanItem === cleanSchool : (cleanSchool === 'default' || !cleanSchool);
   };
 
   const generatePassword = () => {

@@ -21,7 +21,13 @@ import { ReportCardModal } from '../../components/results/ReportCardModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
-import { formatFriendlyFirestoreError, buildFirestoreErrorInfo, OperationType } from '../../utils/firestoreErrors';
+import { formatFriendlyFirestoreError } from '../../utils/firestoreErrors';
+import {
+  evaluateReportConditionsSync,
+  formatReportWriteFailure,
+  isResultRecordLocked,
+  verifyAndEvaluateReportAuthorization,
+} from '../../services/reportAuthorizationService';
 import { broadcastAnnouncementNotifications } from '../../services/notificationService';
 import { 
   fetchGradingProfiles, 
@@ -75,7 +81,7 @@ interface StudentScoreDraft {
 }
 
 export const ResultsPage: React.FC = () => {
-  const { role, currentUser, currentTeacher, isAtLeastAdmin, isSuperAdmin } = useAuth();
+  const { role, currentUser, currentTeacher, activeMembership, isAtLeastAdmin, isSuperAdmin } = useAuth();
   const { settings, schoolId } = useSchool();
   const verifiedSchoolId = (schoolId || '').trim().toLowerCase();
 
@@ -135,13 +141,15 @@ export const ResultsPage: React.FC = () => {
   const isRowLockedForCurrentUser = (draft?: StudentScoreDraft): boolean => {
     if (isAtLeastAdmin) return false;
     if (!draft) return false;
-    const st = draft.status;
-    if (st === 'APPROVED' || st === 'PUBLISHED') return true;
-    const ownerId = draft.originalResult?.teacherId;
-    if (ownerId && currentUser?.uid && ownerId !== currentUser.uid) {
-      return true;
-    }
-    return false;
+    const candidate = draft.originalResult
+      ? draft.originalResult
+      : ({ status: draft.status } as Partial<Result>);
+    return isResultRecordLocked(
+      candidate,
+      currentUser?.uid,
+      currentTeacher?.teacherId,
+      isAtLeastAdmin
+    ).locked;
   };
 
   // Active Grading Profile resolution
@@ -171,7 +179,7 @@ export const ResultsPage: React.FC = () => {
         let cList: SchoolClass[] = [];
         cSnap.forEach((d) => {
           const item = d.data() as SchoolClass;
-          if (item.schoolId === verifiedSchoolId) cList.push(item);
+          if ((item.schoolId || '').trim().toLowerCase() === verifiedSchoolId) cList.push(item);
         });
 
         if (role === 'TEACHER') {
@@ -195,7 +203,7 @@ export const ResultsPage: React.FC = () => {
         let subList: Subject[] = [];
         subSnap.forEach((d) => {
           const item = d.data() as Subject;
-          if (item.schoolId === verifiedSchoolId) subList.push(item);
+          if ((item.schoolId || '').trim().toLowerCase() === verifiedSchoolId) subList.push(item);
         });
 
         if (role === 'TEACHER' && currentTeacher?.subjects && currentTeacher.subjects.length > 0) {
@@ -401,73 +409,62 @@ export const ResultsPage: React.FC = () => {
   };
 
   // Workflow Save (Draft, Submit, Approve, Publish)
-  const initiateSaveResults = (statusToSet: ResultStatus) => {
+  const initiateSaveResults = async (statusToSet: ResultStatus) => {
     if (saving) return;
-    if (!currentUser?.uid) {
-      setErrorMsg('You must be signed in to save student reports.');
-      return;
-    }
-    if (!verifiedSchoolId || (!isSuperAdmin && verifiedSchoolId === 'default')) {
-      setErrorMsg('Security Restriction: Missing verified school membership. Please contact your school administrator.');
-      return;
-    }
+    setErrorMsg('');
+    setSuccessMsg('');
+
     if (!selectedClassId || !selectedSubjectId) {
       setErrorMsg('Please select both a valid class and subject.');
       return;
     }
-    if (!selectedClass || selectedClass.schoolId !== verifiedSchoolId) {
-      setErrorMsg('Security Restriction: Selected class does not belong to your verified school.');
+
+    const existingRows = students.map((s) => {
+      const draft = scoresMap.get(s.studentId);
+      return draft?.originalResult || ({ status: draft?.status || 'DRAFT' } as Partial<Result>);
+    });
+
+    const { evaluation } = await verifyAndEvaluateReportAuthorization({
+      authUid: currentUser?.uid,
+      authEmail: currentUser?.email,
+      role,
+      isSuperAdmin,
+      isAtLeastAdmin,
+      verifiedSchoolId,
+      cachedMembership: activeMembership,
+      cachedTeacher: currentTeacher,
+      selectedClass,
+      selectedSubject,
+      targetStatus: statusToSet,
+      existingResults: existingRows,
+    });
+
+    if (!evaluation.authorized) {
+      setErrorMsg(evaluation.userMessage);
       return;
-    }
-    if (!selectedSubject || selectedSubject.schoolId !== verifiedSchoolId) {
-      setErrorMsg('Security Restriction: Selected subject does not belong to your verified school.');
-      return;
-    }
-
-    // Role Security checks
-    if (role === 'TEACHER') {
-      if (statusToSet === 'APPROVED' || statusToSet === 'PUBLISHED') {
-        setErrorMsg('Security Restriction: Only administrators and designated approvers can approve or publish results.');
-        return;
-      }
-
-      if (!currentTeacher || currentTeacher.status === 'INACTIVE') {
-        setErrorMsg('Security Restriction: Your teacher profile is inactive or missing.');
-        return;
-      }
-
-      if ((currentTeacher.schoolId || '').trim().toLowerCase() !== verifiedSchoolId) {
-        setErrorMsg('Security Restriction: Your teacher membership does not match the selected school.');
-        return;
-      }
-
-      const assignedIds = currentTeacher.assignedClassIds || [];
-      const isAuthorizedClass =
-        assignedIds.includes(selectedClassId) ||
-        selectedClass.classTeacherId === currentTeacher.teacherId;
-      if (!isAuthorizedClass) {
-        setErrorMsg('Security Restriction: You are not authorized to record scores for this class.');
-        return;
-      }
-
-      if (currentTeacher.subjects && currentTeacher.subjects.length > 0) {
-        const isAuthorizedSubject =
-          currentTeacher.subjects.includes(selectedSubjectId) ||
-          currentTeacher.subjects.includes(selectedSubject.name);
-        if (!isAuthorizedSubject) {
-          setErrorMsg('Security Restriction: You are not assigned to teach the selected subject.');
-          return;
-        }
-      }
     }
 
     const editableStudents = students.filter((s) => !isRowLockedForCurrentUser(scoresMap.get(s.studentId)));
     if (editableStudents.length === 0) {
-      setErrorMsg('All student reports in this sheet are locked (Approved, Published, or owned by another teacher).');
+      const lockCheck = evaluateReportConditionsSync({
+        authUid: currentUser?.uid,
+        authEmail: currentUser?.email,
+        role,
+        isSuperAdmin,
+        isAtLeastAdmin,
+        verifiedSchoolId,
+        membership: activeMembership,
+        teacherProfile: currentTeacher,
+        selectedClass,
+        selectedSubject,
+        targetStatus: statusToSet,
+        existingResults: existingRows,
+      });
+      setErrorMsg(lockCheck.userMessage || 'All student reports in this sheet are locked.');
       return;
     }
 
-    // Validation before submission
+    // Validation before submission/publication
     if (statusToSet === 'SUBMITTED' || statusToSet === 'PUBLISHED' || statusToSet === 'APPROVED') {
       const incompleteStudents: string[] = [];
       editableStudents.forEach((s) => {
@@ -514,9 +511,19 @@ export const ResultsPage: React.FC = () => {
       return;
     }
 
+    const actionVerb: 'save' | 'submit' | 'approve' | 'publish' =
+      statusToSet === 'PUBLISHED'
+        ? 'publish'
+        : statusToSet === 'APPROVED'
+        ? 'approve'
+        : statusToSet === 'SUBMITTED'
+        ? 'submit'
+        : 'save';
+
     setSaving(true);
     setSuccessMsg('');
     setErrorMsg('');
+
     try {
       const batch = writeBatch(db);
       let count = 0;
@@ -537,6 +544,7 @@ export const ResultsPage: React.FC = () => {
       const cleanTerm = selectedTerm.replace(/\s+/g, '-');
       const savedStudentIds = new Set<string>();
       const lockedSkippedCount = students.filter((s) => isRowLockedForCurrentUser(scoresMap.get(s.studentId))).length;
+      const willLock = statusToSet === 'APPROVED' || statusToSet === 'PUBLISHED';
 
       students.forEach((s) => {
         const item = scoresMap.get(s.studentId);
@@ -545,7 +553,7 @@ export const ResultsPage: React.FC = () => {
         // Enforce student belongs to active verified school
         if (s.schoolId && s.schoolId.trim().toLowerCase() !== verifiedSchoolId) return;
 
-        // Skip rows that teachers cannot edit (PUBLISHED/APPROVED or owned by another teacher)
+        // Skip rows that teachers cannot edit (APPROVED/PUBLISHED/locked or owned by another teacher)
         if (isRowLockedForCurrentUser(item)) return;
 
         const resultId = `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
@@ -572,7 +580,11 @@ export const ResultsPage: React.FC = () => {
           });
         }
 
-        const ownerUid = item.originalResult?.teacherId || currentUser.uid;
+        // Teachers always normalize teacherId to their verified auth UID so rules ownership passes cleanly
+        const ownerUid = isAtLeastAdmin
+          ? (item.originalResult?.teacherId || currentUser.uid)
+          : currentUser.uid;
+
         const payload: Record<string, any> = {
           resultId,
           schoolId: verifiedSchoolId,
@@ -592,6 +604,7 @@ export const ResultsPage: React.FC = () => {
           isIncomplete: item.isIncomplete,
           isMissingAny: item.isMissingAny,
           status: statusToSet,
+          isLocked: willLock,
           teacherId: ownerUid,
           updatedAt: serverTimestamp(),
           auditHistory,
@@ -608,10 +621,14 @@ export const ResultsPage: React.FC = () => {
         if (statusToSet === 'APPROVED' && isAtLeastAdmin) {
           payload.approvedBy = currentUser.uid;
           payload.approvedAt = serverTimestamp();
+          payload.lockedBy = currentUser.uid;
+          payload.lockedAt = serverTimestamp();
         }
         if (statusToSet === 'PUBLISHED' && isAtLeastAdmin) {
           payload.publishedBy = currentUser.uid;
           payload.publishedAt = serverTimestamp();
+          payload.lockedBy = currentUser.uid;
+          payload.lockedAt = serverTimestamp();
         }
 
         if (!item.originalResult?.createdAt) {
@@ -630,7 +647,14 @@ export const ResultsPage: React.FC = () => {
         return;
       }
 
-      await batch.commit();
+      // Condition K: Execute the primary batch write to /results/{resultId}
+      try {
+        await batch.commit();
+      } catch (writeErr: any) {
+        const failure = formatReportWriteFailure(writeErr, 'REPORT_WRITE', actionVerb);
+        setErrorMsg(failure.userMessage);
+        return;
+      }
 
       // Update local state statuses only for saved rows
       const updated = new Map<string, StudentScoreDraft>(scoresMap);
@@ -656,7 +680,10 @@ export const ResultsPage: React.FC = () => {
               totalScore: existing.totalScore,
               grade: existing.grade,
               status: statusToSet,
-              teacherId: existing.originalResult?.teacherId || currentUser.uid,
+              isLocked: willLock,
+              teacherId: isAtLeastAdmin
+                ? (existing.originalResult?.teacherId || currentUser.uid)
+                : currentUser.uid,
               createdAt: existing.originalResult?.createdAt || null,
               updatedAt: null,
             } as Result
@@ -665,23 +692,31 @@ export const ResultsPage: React.FC = () => {
       });
       setScoresMap(updated);
 
-      await logAudit(
-        currentUser.uid,
-        statusToSet === 'PUBLISHED' ? 'RESULTS_PUBLISHED' : statusToSet === 'APPROVED' ? 'RESULTS_APPROVED' : statusToSet === 'SUBMITTED' ? 'RESULTS_SUBMITTED' : 'RESULTS_SAVED_DRAFT',
-        'results',
-        `${selectedClassId}_${selectedSubjectId}`,
-        `${statusToSet} scores for ${count} students in ${selectedSubjectName} (${activeProfile.name})`,
-        verifiedSchoolId
-      );
-
-      if (statusToSet === 'PUBLISHED') {
-        await broadcastAnnouncementNotifications(
-          'CLASS_SPECIFIC',
-          'Examination Results Published',
-          `Terminal results for ${selectedSubjectName} have been published and are available on parent portals.`,
-          selectedClassId,
-          verifiedSchoolId
+      // Condition L: Execute related audit & notification writes independently so errors are never conflated
+      let relatedWriteWarning = '';
+      try {
+        await logAudit(
+          currentUser.uid,
+          statusToSet === 'PUBLISHED' ? 'RESULTS_PUBLISHED' : statusToSet === 'APPROVED' ? 'RESULTS_APPROVED' : statusToSet === 'SUBMITTED' ? 'RESULTS_SUBMITTED' : 'RESULTS_SAVED_DRAFT',
+          'results',
+          `${selectedClassId}_${selectedSubjectId}`,
+          `${statusToSet} scores for ${count} students in ${selectedSubjectName} (${activeProfile.name})`,
+          verifiedSchoolId,
+          { throwOnError: true }
         );
+
+        if (statusToSet === 'PUBLISHED') {
+          await broadcastAnnouncementNotifications(
+            'CLASS_SPECIFIC',
+            'Examination Results Published',
+            `Terminal results for ${selectedSubjectName} have been published and are available on parent portals.`,
+            selectedClassId,
+            verifiedSchoolId
+          );
+        }
+      } catch (relatedErr: any) {
+        const relatedFailure = formatReportWriteFailure(relatedErr, 'RELATED_WRITE', actionVerb);
+        relatedWriteWarning = relatedFailure.userMessage;
       }
 
       const skippedSuffix = lockedSkippedCount > 0 ? ` (${lockedSkippedCount} locked row(s) left unchanged.)` : '';
@@ -694,12 +729,11 @@ export const ResultsPage: React.FC = () => {
           ? `Submitted marks for ${count} students for administrative review.`
           : `Saved scores as DRAFT for ${count} students.`) + skippedSuffix
       );
+      if (relatedWriteWarning) {
+        setErrorMsg(relatedWriteWarning);
+      }
       setShowRevisionModal(false);
       setRevisionReason('');
-    } catch (err: any) {
-      const errInfo = buildFirestoreErrorInfo(err, OperationType.WRITE, `results (class=${selectedClassId}, subject=${selectedSubjectId})`);
-      console.error('Error saving results:', JSON.stringify(errInfo));
-      setErrorMsg(formatFriendlyFirestoreError(err, statusToSet === 'SUBMITTED' ? 'submit student reports' : 'save student reports'));
     } finally {
       setSaving(false);
     }
@@ -739,10 +773,16 @@ export const ResultsPage: React.FC = () => {
     if (csvPreviewRows.length === 0) return;
 
     const updated = new Map<string, StudentScoreDraft>(scoresMap);
+    let appliedCount = 0;
+    let skippedLockedCount = 0;
 
     csvPreviewRows.forEach((row) => {
       const existing = updated.get(row.studentId);
       if (!existing) return;
+      if (isRowLockedForCurrentUser(existing)) {
+        skippedLockedCount++;
+        return;
+      }
 
       const mergedScores = {
         ...existing.componentScores,
@@ -761,13 +801,18 @@ export const ResultsPage: React.FC = () => {
         isIncomplete: calculated.isIncomplete,
         isMissingAny: calculated.isMissingAny,
       });
+      appliedCount++;
     });
 
     setScoresMap(updated);
     setShowCsvModal(false);
     setCsvContent('');
     setCsvPreviewRows([]);
-    setSuccessMsg(`Imported scores from CSV for ${csvPreviewRows.length} students! Remember to save.`);
+    setSuccessMsg(
+      `Imported scores from CSV for ${appliedCount} students!` +
+        (skippedLockedCount > 0 ? ` (${skippedLockedCount} locked row(s) skipped.)` : '') +
+        ' Remember to save.'
+    );
   };
 
   // Open Full Report Card for student
