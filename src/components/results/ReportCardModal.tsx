@@ -18,6 +18,7 @@ import { printDocumentElement, downloadDocumentAsFile } from '../../utils/docume
 import { getStudentEvaluation, saveStudentEvaluation } from '../../services/evaluationService';
 import { DEFAULT_REPORT_TEMPLATE, DEFAULT_AFFECTIVE_TRAITS } from '../../services/schoolService';
 import { DEFAULT_GRADING_PROFILES } from '../../services/assessmentEngine';
+import { formatFriendlyFirestoreError } from '../../utils/firestoreErrors';
 import { 
   Printer, 
   Download, 
@@ -101,8 +102,8 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
   session,
   gradingProfile,
 }) => {
-  const { settings } = useSchool();
-  const { role, currentUser, currentTeacher } = useAuth();
+  const { settings, schoolId } = useSchool();
+  const { role, isAtLeastAdmin, currentUser, currentTeacher } = useAuth();
 
   const reportTemplate = settings.reportTemplate || DEFAULT_REPORT_TEMPLATE;
   const traitsList: AffectiveTraitConfig[] = reportTemplate.affectiveTraits?.length 
@@ -217,6 +218,7 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
   
   const [isSavingEvaluation, setIsSavingEvaluation] = useState(false);
   const [evalSaveSuccess, setEvalSaveSuccess] = useState(false);
+  const [evalSaveError, setEvalSaveError] = useState('');
 
   // Load existing student evaluation from Firestore
   useEffect(() => {
@@ -263,6 +265,7 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
     loadEvaluation();
     setIsEditingRemarks(false);
     setEvalSaveSuccess(false);
+    setEvalSaveError('');
 
     return () => {
       isMounted = false;
@@ -281,24 +284,38 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
   const handleSaveEvaluation = async () => {
     if (!student) return;
     setIsSavingEvaluation(true);
+    setEvalSaveError('');
+    setEvalSaveSuccess(false);
     try {
-      await saveStudentEvaluation({
+      const verifiedSchoolId = (student.schoolId || schoolClass?.schoolId || schoolId || '').trim().toLowerCase();
+      if (!verifiedSchoolId || verifiedSchoolId === 'default') {
+        throw new Error('Cannot save evaluation: Verified school membership is missing.');
+      }
+
+      const payload: any = {
+        schoolId: verifiedSchoolId,
+        classId: schoolClass?.classId || student.classId,
         studentId: student.studentId,
         term: currentTerm,
         academicSession: currentSession,
         teacherRemark: customTeacherRemark.trim(),
-        principalRemark: customPrincipalRemark.trim(),
         teacherName: customTeacherName.trim(),
         verdict: resultVerdict,
         affectiveScores: customAffectiveScores,
         updatedBy: currentUser?.uid || role,
-      });
+      };
+      if (isAtLeastAdmin) {
+        payload.principalRemark = customPrincipalRemark.trim();
+      }
+
+      await saveStudentEvaluation(payload);
 
       setEvalSaveSuccess(true);
       setTimeout(() => setEvalSaveSuccess(false), 3000);
       setIsEditingRemarks(false);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving student evaluation:', err);
+      setEvalSaveError(formatFriendlyFirestoreError(err, 'save student remarks & ratings'));
     } finally {
       setIsSavingEvaluation(false);
     }
@@ -455,7 +472,8 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
               </div>
             </div>
 
-            {/* Principal Remark Editor */}
+            {/* Principal Remark Editor (Admins only) */}
+            {isAtLeastAdmin && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-bold text-slate-800">
@@ -501,6 +519,7 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
                 className="w-full px-3 py-2 bg-white border border-emerald-300 rounded-lg text-xs focus:ring-2 focus:ring-emerald-600 focus:outline-none"
               />
             </div>
+            )}
 
             {/* Affective & Psychomotor Domain Rating Editor */}
             <div className="space-y-2 pt-2 border-t border-emerald-200">
@@ -542,6 +561,13 @@ export const ReportCardModal: React.FC<ReportCardModalProps> = ({
                 })}
               </div>
             </div>
+          </div>
+        )}
+
+        {evalSaveError && (
+          <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span className="font-semibold">{evalSaveError}</span>
           </div>
         )}
 

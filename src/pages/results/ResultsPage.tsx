@@ -21,6 +21,7 @@ import { ReportCardModal } from '../../components/results/ReportCardModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
+import { formatFriendlyFirestoreError, buildFirestoreErrorInfo, OperationType } from '../../utils/firestoreErrors';
 import { broadcastAnnouncementNotifications } from '../../services/notificationService';
 import { 
   fetchGradingProfiles, 
@@ -74,8 +75,9 @@ interface StudentScoreDraft {
 }
 
 export const ResultsPage: React.FC = () => {
-  const { role, currentUser, currentTeacher, isAtLeastAdmin } = useAuth();
+  const { role, currentUser, currentTeacher, isAtLeastAdmin, isSuperAdmin } = useAuth();
   const { settings, schoolId } = useSchool();
+  const verifiedSchoolId = (schoolId || '').trim().toLowerCase();
 
   // Navigation & View mode
   const [activeView, setActiveView] = useState<'subject_entry' | 'broadsheet'>('subject_entry');
@@ -122,13 +124,25 @@ export const ResultsPage: React.FC = () => {
   const [selectedStudentForReport, setSelectedStudentForReport] = useState<Student | null>(null);
   const [studentAllResults, setStudentAllResults] = useState<Result[]>([]);
 
-  const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
-  };
-
   const selectedClass = useMemo(() => {
     return classes.find(c => c.classId === selectedClassId) || null;
   }, [classes, selectedClassId]);
+
+  const selectedSubject = useMemo(() => {
+    return subjects.find(s => s.subjectId === selectedSubjectId) || null;
+  }, [subjects, selectedSubjectId]);
+
+  const isRowLockedForCurrentUser = (draft?: StudentScoreDraft): boolean => {
+    if (isAtLeastAdmin) return false;
+    if (!draft) return false;
+    const st = draft.status;
+    if (st === 'APPROVED' || st === 'PUBLISHED') return true;
+    const ownerId = draft.originalResult?.teacherId;
+    if (ownerId && currentUser?.uid && ownerId !== currentUser.uid) {
+      return true;
+    }
+    return false;
+  };
 
   // Active Grading Profile resolution
   const activeProfile = useMemo<GradingProfile>(() => {
@@ -139,16 +153,25 @@ export const ResultsPage: React.FC = () => {
     return resolveGradingProfile(gradingProfiles, selectedClass, selectedSubjectId);
   }, [gradingProfiles, selectedClass, selectedSubjectId, manualProfileId]);
 
-  // 1. Fetch Classes, Subjects, and Grading Profiles
+  // 1. Fetch Classes, Subjects, and Grading Profiles (strictly scoped by schoolId)
   useEffect(() => {
     const fetchBase = async () => {
+      if (!verifiedSchoolId) {
+        setClasses([]);
+        setSubjects([]);
+        setLoading(false);
+        return;
+      }
+
       try {
         // Classes
-        const cSnap = await getDocs(collection(db, 'classes'));
+        const cSnap = await getDocs(
+          query(collection(db, 'classes'), where('schoolId', '==', verifiedSchoolId))
+        );
         let cList: SchoolClass[] = [];
         cSnap.forEach((d) => {
           const item = d.data() as SchoolClass;
-          if (matchesTenant(item.schoolId)) cList.push(item);
+          if (item.schoolId === verifiedSchoolId) cList.push(item);
         });
 
         if (role === 'TEACHER') {
@@ -159,15 +182,20 @@ export const ResultsPage: React.FC = () => {
         }
 
         setClasses(cList);
-        if (cList.length > 0 && !selectedClassId) setSelectedClassId(cList[0].classId);
-        else if (cList.length === 0) setSelectedClassId('');
+        if (cList.length > 0 && (!selectedClassId || !cList.some(c => c.classId === selectedClassId))) {
+          setSelectedClassId(cList[0].classId);
+        } else if (cList.length === 0) {
+          setSelectedClassId('');
+        }
 
         // Subjects
-        const subSnap = await getDocs(collection(db, 'subjects'));
+        const subSnap = await getDocs(
+          query(collection(db, 'subjects'), where('schoolId', '==', verifiedSchoolId))
+        );
         let subList: Subject[] = [];
         subSnap.forEach((d) => {
           const item = d.data() as Subject;
-          if (matchesTenant(item.schoolId)) subList.push(item);
+          if (item.schoolId === verifiedSchoolId) subList.push(item);
         });
 
         if (role === 'TEACHER' && currentTeacher?.subjects && currentTeacher.subjects.length > 0) {
@@ -176,31 +204,43 @@ export const ResultsPage: React.FC = () => {
         }
 
         setSubjects(subList);
-        if (subList.length > 0 && !selectedSubjectId) setSelectedSubjectId(subList[0].subjectId);
-        else if (subList.length === 0) setSelectedSubjectId('');
+        if (subList.length > 0 && (!selectedSubjectId || !subList.some(s => s.subjectId === selectedSubjectId))) {
+          setSelectedSubjectId(subList[0].subjectId);
+        } else if (subList.length === 0) {
+          setSelectedSubjectId('');
+        }
 
         // Grading Profiles
-        const profs = await fetchGradingProfiles(schoolId || 'default');
+        const profs = await fetchGradingProfiles(verifiedSchoolId);
         setGradingProfiles(profs);
-      } catch (err) {
+      } catch (err: any) {
         console.error('Error fetching base data:', err);
+        setErrorMsg(formatFriendlyFirestoreError(err, 'load classes and subjects'));
       }
     };
     fetchBase();
-  }, [role, currentTeacher, schoolId]);
+  }, [role, currentTeacher, verifiedSchoolId]);
 
   // 2. Fetch Students & Existing Scores for selected Class, Subject, Term, Session
   useEffect(() => {
-    if (!selectedClassId) return;
+    if (!selectedClassId || !verifiedSchoolId) {
+      setLoading(false);
+      return;
+    }
 
     const fetchStudentsAndScores = async () => {
       setLoading(true);
       setSuccessMsg('');
       setErrorMsg('');
       try {
-        // Students in active class
+        // Students in active class (scoped to verifiedSchoolId)
         const sSnap = await getDocs(
-          query(collection(db, 'students'), where('classId', '==', selectedClassId), where('status', '==', 'ACTIVE'))
+          query(
+            collection(db, 'students'),
+            where('schoolId', '==', verifiedSchoolId),
+            where('classId', '==', selectedClassId),
+            where('status', '==', 'ACTIVE')
+          )
         );
         const sList: Student[] = [];
         sSnap.forEach((d) => sList.push(d.data() as Student));
@@ -212,10 +252,11 @@ export const ResultsPage: React.FC = () => {
           return;
         }
 
-        // Results for this class + subject + term + session
+        // Results for this school + class + subject + term + session
         const rSnap = await getDocs(
           query(
             collection(db, 'results'),
+            where('schoolId', '==', verifiedSchoolId),
             where('classId', '==', selectedClassId),
             where('subjectId', '==', selectedSubjectId),
             where('term', '==', selectedTerm),
@@ -270,19 +311,20 @@ export const ResultsPage: React.FC = () => {
         });
 
         setScoresMap(newDraftMap);
-      } catch (err) {
+      } catch (err: any) {
         console.error('Error fetching scores:', err);
+        setErrorMsg(formatFriendlyFirestoreError(err, 'load class scores'));
       } finally {
         setLoading(false);
       }
     };
 
     fetchStudentsAndScores();
-  }, [selectedClassId, selectedSubjectId, selectedTerm, selectedSession, activeProfile]);
+  }, [selectedClassId, selectedSubjectId, selectedTerm, selectedSession, activeProfile, verifiedSchoolId]);
 
   // 3. Load Broadsheet when broadsheet view is toggled
   useEffect(() => {
-    if (activeView !== 'broadsheet' || !selectedClassId) return;
+    if (activeView !== 'broadsheet' || !selectedClassId || !verifiedSchoolId) return;
 
     const fetchClassBroadsheet = async () => {
       setLoadingBroadsheet(true);
@@ -290,6 +332,7 @@ export const ResultsPage: React.FC = () => {
         const rSnap = await getDocs(
           query(
             collection(db, 'results'),
+            where('schoolId', '==', verifiedSchoolId),
             where('classId', '==', selectedClassId),
             where('term', '==', selectedTerm),
             where('academicSession', '==', selectedSession)
@@ -307,21 +350,22 @@ export const ResultsPage: React.FC = () => {
           activeProfile
         );
         setBroadsheetSummary(summary);
-      } catch (err) {
+      } catch (err: any) {
         console.error('Error loading broadsheet:', err);
+        setErrorMsg(formatFriendlyFirestoreError(err, 'load class broadsheet'));
       } finally {
         setLoadingBroadsheet(false);
       }
     };
 
     fetchClassBroadsheet();
-  }, [activeView, selectedClassId, selectedTerm, selectedSession, activeProfile]);
+  }, [activeView, selectedClassId, selectedTerm, selectedSession, activeProfile, verifiedSchoolId]);
 
   // Update a single component score for a student
   const handleScoreChange = (studentId: string, componentId: string, value: string) => {
     const updated = new Map<string, StudentScoreDraft>(scoresMap);
     const existing = updated.get(studentId);
-    if (!existing) return;
+    if (!existing || isRowLockedForCurrentUser(existing)) return;
 
     const compConfig = activeProfile.components.find(c => c.id === componentId);
     const max = compConfig?.maxScore || 100;
@@ -359,8 +403,24 @@ export const ResultsPage: React.FC = () => {
   // Workflow Save (Draft, Submit, Approve, Publish)
   const initiateSaveResults = (statusToSet: ResultStatus) => {
     if (saving) return;
+    if (!currentUser?.uid) {
+      setErrorMsg('You must be signed in to save student reports.');
+      return;
+    }
+    if (!verifiedSchoolId || (!isSuperAdmin && verifiedSchoolId === 'default')) {
+      setErrorMsg('Security Restriction: Missing verified school membership. Please contact your school administrator.');
+      return;
+    }
     if (!selectedClassId || !selectedSubjectId) {
       setErrorMsg('Please select both a valid class and subject.');
+      return;
+    }
+    if (!selectedClass || selectedClass.schoolId !== verifiedSchoolId) {
+      setErrorMsg('Security Restriction: Selected class does not belong to your verified school.');
+      return;
+    }
+    if (!selectedSubject || selectedSubject.schoolId !== verifiedSchoolId) {
+      setErrorMsg('Security Restriction: Selected subject does not belong to your verified school.');
       return;
     }
 
@@ -371,21 +431,49 @@ export const ResultsPage: React.FC = () => {
         return;
       }
 
-      const assignedIds = currentTeacher?.assignedClassIds || [];
-      const isAuthorized = assignedIds.includes(selectedClassId) || classes.some(c => c.classId === selectedClassId && c.classTeacherId === currentTeacher?.teacherId);
-      if (!isAuthorized) {
+      if (!currentTeacher || currentTeacher.status === 'INACTIVE') {
+        setErrorMsg('Security Restriction: Your teacher profile is inactive or missing.');
+        return;
+      }
+
+      if ((currentTeacher.schoolId || '').trim().toLowerCase() !== verifiedSchoolId) {
+        setErrorMsg('Security Restriction: Your teacher membership does not match the selected school.');
+        return;
+      }
+
+      const assignedIds = currentTeacher.assignedClassIds || [];
+      const isAuthorizedClass =
+        assignedIds.includes(selectedClassId) ||
+        selectedClass.classTeacherId === currentTeacher.teacherId;
+      if (!isAuthorizedClass) {
         setErrorMsg('Security Restriction: You are not authorized to record scores for this class.');
         return;
       }
+
+      if (currentTeacher.subjects && currentTeacher.subjects.length > 0) {
+        const isAuthorizedSubject =
+          currentTeacher.subjects.includes(selectedSubjectId) ||
+          currentTeacher.subjects.includes(selectedSubject.name);
+        if (!isAuthorizedSubject) {
+          setErrorMsg('Security Restriction: You are not assigned to teach the selected subject.');
+          return;
+        }
+      }
+    }
+
+    const editableStudents = students.filter((s) => !isRowLockedForCurrentUser(scoresMap.get(s.studentId)));
+    if (editableStudents.length === 0) {
+      setErrorMsg('All student reports in this sheet are locked (Approved, Published, or owned by another teacher).');
+      return;
     }
 
     // Validation before submission
     if (statusToSet === 'SUBMITTED' || statusToSet === 'PUBLISHED' || statusToSet === 'APPROVED') {
       const incompleteStudents: string[] = [];
-      scoresMap.forEach((entry, sId) => {
-        if (entry.isIncomplete && !activeProfile.treatMissingAsZero) {
-          const s = students.find(st => st.studentId === sId);
-          incompleteStudents.push(s ? `${s.firstName} ${s.lastName}` : sId);
+      editableStudents.forEach((s) => {
+        const entry = scoresMap.get(s.studentId);
+        if (entry && entry.isIncomplete && !activeProfile.treatMissingAsZero) {
+          incompleteStudents.push(`${s.firstName} ${s.lastName}`);
         }
       });
 
@@ -399,11 +487,11 @@ export const ResultsPage: React.FC = () => {
       }
     }
 
-    // Check if any existing result is already published
+    // Check if any existing result is already published (Admins revising published scores)
     let hasPublishedChanges = false;
-    scoresMap.forEach((entry) => {
-      if (entry.originalResult?.status === 'PUBLISHED') {
-        // Compare scores
+    editableStudents.forEach((s) => {
+      const entry = scoresMap.get(s.studentId);
+      if (entry?.originalResult?.status === 'PUBLISHED') {
         const originalTotal = entry.originalResult.totalScore;
         if (originalTotal !== entry.totalScore) {
           hasPublishedChanges = true;
@@ -412,17 +500,20 @@ export const ResultsPage: React.FC = () => {
     });
 
     if (hasPublishedChanges) {
-      // Prompt for revision reason to record in immutable audit log
       setPendingSaveStatus(statusToSet);
       setShowRevisionModal(true);
       return;
     }
 
-    // Proceed to direct save
     executeSaveResults(statusToSet);
   };
 
   const executeSaveResults = async (statusToSet: ResultStatus, reason?: string) => {
+    if (!currentUser?.uid || !verifiedSchoolId) {
+      setErrorMsg('Missing authenticated user or verified school membership.');
+      return;
+    }
+
     setSaving(true);
     setSuccessMsg('');
     setErrorMsg('');
@@ -430,7 +521,6 @@ export const ResultsPage: React.FC = () => {
       const batch = writeBatch(db);
       let count = 0;
 
-      // Frozen snapshot of active grading profile
       const profileSnapshot = {
         profileId: activeProfile.profileId,
         name: activeProfile.name,
@@ -443,28 +533,34 @@ export const ResultsPage: React.FC = () => {
       };
 
       const nowIso = new Date().toISOString();
+      const cleanSession = selectedSession.replace(/[^a-zA-Z0-9]/g, '-');
+      const cleanTerm = selectedTerm.replace(/\s+/g, '-');
+      const savedStudentIds = new Set<string>();
+      const lockedSkippedCount = students.filter((s) => isRowLockedForCurrentUser(scoresMap.get(s.studentId))).length;
 
       students.forEach((s) => {
         const item = scoresMap.get(s.studentId);
         if (!item) return;
 
-        // Clean deterministic session & term string for key
-        const cleanSession = selectedSession.replace(/[^a-zA-Z0-9]/g, '-');
-        const cleanTerm = selectedTerm.replace(/\s+/g, '-');
+        // Enforce student belongs to active verified school
+        if (s.schoolId && s.schoolId.trim().toLowerCase() !== verifiedSchoolId) return;
+
+        // Skip rows that teachers cannot edit (PUBLISHED/APPROVED or owned by another teacher)
+        if (isRowLockedForCurrentUser(item)) return;
+
         const resultId = `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
         const ref = doc(db, 'results', resultId);
 
-        // Fallback backward compatibility numbers
         const caScore = item.componentScores['ca'] ?? item.componentScores['ca1'] ?? 0;
         const examScore = item.componentScores['exam'] ?? item.totalScore ?? 0;
 
-        // Audit History Entry if revised
-        const auditHistory: ResultAuditEntry[] = item.originalResult?.auditHistory || [];
+        // Clone auditHistory cleanly (never mutate existing state array)
+        const auditHistory: ResultAuditEntry[] = [...(item.originalResult?.auditHistory || [])];
         if (item.originalResult && item.originalResult.status === 'PUBLISHED' && item.originalResult.totalScore !== item.totalScore) {
           auditHistory.push({
             timestamp: nowIso,
-            userId: currentUser?.uid || 'user',
-            userName: currentUser?.displayName || currentUser?.email || 'User',
+            userId: currentUser.uid,
+            userName: currentUser.displayName || currentUser.email || 'User',
             action: 'UPDATED',
             previousScores: item.originalResult.componentScores,
             newScores: item.componentScores,
@@ -476,9 +572,10 @@ export const ResultsPage: React.FC = () => {
           });
         }
 
-        const payload: Partial<Result> = {
+        const ownerUid = item.originalResult?.teacherId || currentUser.uid;
+        const payload: Record<string, any> = {
           resultId,
-          schoolId: s.schoolId || schoolId || 'default',
+          schoolId: verifiedSchoolId,
           studentId: s.studentId,
           classId: selectedClassId,
           subjectId: selectedSubjectId,
@@ -490,58 +587,77 @@ export const ResultsPage: React.FC = () => {
           totalScore: item.totalScore,
           grade: item.grade,
           remark: item.remark,
-          gradePoint: item.gradePoint,
           gradingProfileId: activeProfile.profileId,
           gradingProfileSnapshot: profileSnapshot,
           isIncomplete: item.isIncomplete,
           isMissingAny: item.isMissingAny,
           status: statusToSet,
-          teacherId: currentUser?.uid || 'teacher',
+          teacherId: ownerUid,
           updatedAt: serverTimestamp(),
           auditHistory,
         };
 
-        if (statusToSet === 'SUBMITTED' && !item.originalResult?.submittedAt) {
-          payload.submittedBy = currentUser?.uid;
+        if (item.gradePoint !== undefined) {
+          payload.gradePoint = item.gradePoint;
+        }
+
+        if (statusToSet === 'SUBMITTED') {
+          payload.submittedBy = currentUser.uid;
           payload.submittedAt = serverTimestamp();
         }
-        if (statusToSet === 'APPROVED' && !item.originalResult?.approvedAt) {
-          payload.approvedBy = currentUser?.uid;
+        if (statusToSet === 'APPROVED' && isAtLeastAdmin) {
+          payload.approvedBy = currentUser.uid;
           payload.approvedAt = serverTimestamp();
         }
-        if (statusToSet === 'PUBLISHED') {
-          payload.publishedBy = currentUser?.uid;
+        if (statusToSet === 'PUBLISHED' && isAtLeastAdmin) {
+          payload.publishedBy = currentUser.uid;
           payload.publishedAt = serverTimestamp();
         }
 
-        batch.set(ref, { ...payload, createdAt: item.originalResult?.createdAt || serverTimestamp() }, { merge: true });
+        if (!item.originalResult?.createdAt) {
+          payload.createdAt = serverTimestamp();
+        } else {
+          payload.createdAt = item.originalResult.createdAt;
+        }
+
+        batch.set(ref, payload, { merge: true });
+        savedStudentIds.add(s.studentId);
         count++;
       });
 
+      if (count === 0) {
+        setErrorMsg('No editable student reports were eligible to save.');
+        return;
+      }
+
       await batch.commit();
 
-      // Update local state statuses
+      // Update local state statuses only for saved rows
       const updated = new Map<string, StudentScoreDraft>(scoresMap);
       students.forEach((s) => {
+        if (!savedStudentIds.has(s.studentId)) return;
         const existing = updated.get(s.studentId);
         if (existing) {
-          updated.set(s.studentId, { 
-            ...existing, 
+          const resultId = `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
+          updated.set(s.studentId, {
+            ...existing,
             status: statusToSet,
             originalResult: {
               ...(existing.originalResult || {}),
-              resultId: `res_${s.studentId}_${selectedSubjectId}_${selectedTerm}_${selectedSession}`,
+              resultId,
+              schoolId: verifiedSchoolId,
               studentId: s.studentId,
               classId: selectedClassId,
               subjectId: selectedSubjectId,
               academicSession: selectedSession,
               term: selectedTerm,
-              caScore: 0,
-              examScore: 0,
+              caScore: existing.componentScores['ca'] ?? existing.componentScores['ca1'] ?? 0,
+              examScore: existing.componentScores['exam'] ?? existing.totalScore ?? 0,
               totalScore: existing.totalScore,
               grade: existing.grade,
               status: statusToSet,
-              createdAt: null,
+              teacherId: existing.originalResult?.teacherId || currentUser.uid,
+              createdAt: existing.originalResult?.createdAt || null,
               updatedAt: null,
             } as Result
           });
@@ -550,36 +666,40 @@ export const ResultsPage: React.FC = () => {
       setScoresMap(updated);
 
       await logAudit(
-        currentUser?.uid || 'staff',
-        statusToSet === 'PUBLISHED' ? 'RESULTS_PUBLISHED' : statusToSet === 'SUBMITTED' ? 'RESULTS_SUBMITTED' : 'RESULTS_SAVED_DRAFT',
+        currentUser.uid,
+        statusToSet === 'PUBLISHED' ? 'RESULTS_PUBLISHED' : statusToSet === 'APPROVED' ? 'RESULTS_APPROVED' : statusToSet === 'SUBMITTED' ? 'RESULTS_SUBMITTED' : 'RESULTS_SAVED_DRAFT',
         'results',
         `${selectedClassId}_${selectedSubjectId}`,
         `${statusToSet} scores for ${count} students in ${selectedSubjectName} (${activeProfile.name})`,
-        schoolId || 'default'
+        verifiedSchoolId
       );
-      
+
       if (statusToSet === 'PUBLISHED') {
         await broadcastAnnouncementNotifications(
           'CLASS_SPECIFIC',
           'Examination Results Published',
           `Terminal results for ${selectedSubjectName} have been published and are available on parent portals.`,
           selectedClassId,
-          schoolId || 'default'
+          verifiedSchoolId
         );
       }
 
+      const skippedSuffix = lockedSkippedCount > 0 ? ` (${lockedSkippedCount} locked row(s) left unchanged.)` : '';
       setSuccessMsg(
-        statusToSet === 'PUBLISHED'
+        (statusToSet === 'PUBLISHED'
           ? `Successfully published results for ${count} students! Visible on parent and student portals.`
+          : statusToSet === 'APPROVED'
+          ? `Approved results for ${count} students.`
           : statusToSet === 'SUBMITTED'
           ? `Submitted marks for ${count} students for administrative review.`
-          : `Saved scores as DRAFT for ${count} students.`
+          : `Saved scores as DRAFT for ${count} students.`) + skippedSuffix
       );
       setShowRevisionModal(false);
       setRevisionReason('');
     } catch (err: any) {
-      console.error('Error saving results:', err);
-      setErrorMsg(err.message || 'Failed to save results.');
+      const errInfo = buildFirestoreErrorInfo(err, OperationType.WRITE, `results (class=${selectedClassId}, subject=${selectedSubjectId})`);
+      console.error('Error saving results:', JSON.stringify(errInfo));
+      setErrorMsg(formatFriendlyFirestoreError(err, statusToSet === 'SUBMITTED' ? 'submit student reports' : 'save student reports'));
     } finally {
       setSaving(false);
     }
@@ -653,9 +773,11 @@ export const ResultsPage: React.FC = () => {
   // Open Full Report Card for student
   const handleOpenReportCard = async (student: Student) => {
     try {
+      const targetSchool = (student.schoolId || verifiedSchoolId).trim().toLowerCase();
       const rSnap = await getDocs(
         query(
           collection(db, 'results'),
+          where('schoolId', '==', targetSchool),
           where('studentId', '==', student.studentId),
           where('term', '==', selectedTerm),
           where('academicSession', '==', selectedSession)
@@ -667,6 +789,7 @@ export const ResultsPage: React.FC = () => {
       setSelectedStudentForReport(student);
     } catch (err) {
       console.error('Error fetching student report:', err);
+      setErrorMsg(formatFriendlyFirestoreError(err, 'load student report card'));
     }
   };
 
@@ -965,13 +1088,14 @@ export const ResultsPage: React.FC = () => {
                       const scoreData = scoresMap.get(student.studentId);
                       const isComplete = !scoreData?.isIncomplete;
                       const status = scoreData?.status || 'DRAFT';
+                      const rowLocked = isRowLockedForCurrentUser(scoreData);
 
                       return (
                         <tr 
                           key={student.studentId} 
                           className={`hover:bg-slate-50/80 transition-colors ${
                             scoreData?.isIncomplete ? 'bg-amber-50/30' : ''
-                          }`}
+                          } ${rowLocked ? 'opacity-75 bg-slate-50/50' : ''}`}
                         >
                           <td className="px-4 py-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
                           <td className="px-4 py-3 font-bold text-slate-900">
@@ -995,10 +1119,14 @@ export const ResultsPage: React.FC = () => {
                                   max={comp.maxScore}
                                   step="any"
                                   placeholder="—"
+                                  disabled={rowLocked}
+                                  title={rowLocked ? 'Locked (Approved, Published, or owned by another teacher)' : undefined}
                                   value={displayVal}
                                   onChange={(e) => handleScoreChange(student.studentId, comp.id, e.target.value)}
                                   className={`w-16 px-2 py-1 text-center text-xs font-semibold rounded border transition-colors focus:outline-none focus:ring-1 ${
-                                    isOutOfRange
+                                    rowLocked
+                                      ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed'
+                                      : isOutOfRange
                                       ? 'bg-rose-50 border-rose-400 text-rose-800 focus:ring-rose-500'
                                       : displayVal === ''
                                       ? 'bg-white border-slate-300 text-slate-700 focus:ring-emerald-500'

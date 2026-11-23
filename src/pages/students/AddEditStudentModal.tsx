@@ -24,7 +24,7 @@ export const AddEditStudentModal: React.FC<AddEditStudentModalProps> = ({
   student,
   onSuccess,
 }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, isSuperAdmin } = useAuth();
   const { schoolId } = useSchool();
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [parents, setParents] = useState<Parent[]>([]);
@@ -51,14 +51,25 @@ export const AddEditStudentModal: React.FC<AddEditStudentModalProps> = ({
 
   useEffect(() => {
     const fetchDropdowns = async () => {
+      const cleanSchool = (student?.schoolId || schoolId || '').trim().toLowerCase();
+      if (!cleanSchool && !isSuperAdmin) {
+        setClasses([]);
+        setParents([]);
+        return;
+      }
+
       try {
-        const cSnap = await getDocs(collection(db, 'classes'));
+        const cSnap = await getDocs(
+          cleanSchool ? query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)) : collection(db, 'classes')
+        );
         const cList: SchoolClass[] = [];
         cSnap.forEach((d) => cList.push(d.data() as SchoolClass));
         setClasses(cList);
         if (!classId && cList.length > 0) setClassId(cList[0].classId);
 
-        const pSnap = await getDocs(collection(db, 'parents'));
+        const pSnap = await getDocs(
+          cleanSchool ? query(collection(db, 'parents'), where('schoolId', '==', cleanSchool)) : collection(db, 'parents')
+        );
         const pList: Parent[] = [];
         pSnap.forEach((d) => pList.push(d.data() as Parent));
         setParents(pList);
@@ -71,7 +82,7 @@ export const AddEditStudentModal: React.FC<AddEditStudentModalProps> = ({
     if (isOpen) {
       fetchDropdowns();
     }
-  }, [isOpen]);
+  }, [isOpen, schoolId, student?.schoolId]);
 
   useEffect(() => {
     if (student) {
@@ -129,10 +140,19 @@ export const AddEditStudentModal: React.FC<AddEditStudentModalProps> = ({
     setLoading(true);
     setError('');
     try {
-      // Check duplicate admission number if creating new student
+      const targetSchoolId = (student?.schoolId || schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId || (targetSchoolId === 'default' && !isSuperAdmin && !student?.schoolId)) {
+        throw new Error('Cannot save student: No verified school context available.');
+      }
+
+      // Check duplicate admission number if creating new student within this school
       if (!student) {
         const dupCheck = await getDocs(
-          query(collection(db, 'students'), where('admissionNumber', '==', admissionNumber.trim()))
+          query(
+            collection(db, 'students'),
+            where('schoolId', '==', targetSchoolId),
+            where('admissionNumber', '==', admissionNumber.trim())
+          )
         );
         if (!dupCheck.empty) {
           setError('A student with this admission number already exists. Please use a unique number.');
@@ -143,7 +163,10 @@ export const AddEditStudentModal: React.FC<AddEditStudentModalProps> = ({
 
       const sId = student?.studentId || admissionNumber.trim().replace(/\s+/g, '-');
       const studentDocRef = doc(db, 'students', sId);
-      const targetSchoolId = student?.schoolId || schoolId || 'default';
+      const selectedParentObj = selectedParentId ? parents.find((p) => p.parentId === selectedParentId) : undefined;
+      const syncedParentEmails = selectedParentObj?.email
+        ? [selectedParentObj.email.trim().toLowerCase()]
+        : (selectedParentId ? (student?.parentEmails || []) : []);
 
       const payload: any = {
         studentId: sId,
@@ -159,6 +182,7 @@ export const AddEditStudentModal: React.FC<AddEditStudentModalProps> = ({
         photoUrl: photoUrl.trim() || undefined,
         status,
         parentIds: selectedParentId ? [selectedParentId] : [],
+        parentEmails: syncedParentEmails,
         address: address.trim() || undefined,
         emergencyContactName: emergencyContactName.trim() || undefined,
         emergencyContactPhone: emergencyContactPhone.trim() || undefined,

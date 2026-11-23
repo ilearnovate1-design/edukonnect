@@ -60,6 +60,7 @@ export default function App() {
   // Prevent endless loading screen: force ready after 2.5s
   const [forceReady, setForceReady] = useState(false);
   useEffect(() => {
+    testFirestoreConnection();
     const timer = setTimeout(() => setForceReady(true), 2500);
     return () => clearTimeout(timer);
   }, []);
@@ -72,19 +73,26 @@ export default function App() {
 
   const handleViewReportCard = async (student: Student) => {
     try {
+      const targetSchool = (student.schoolId || appUser?.schoolId || '').trim().toLowerCase();
+      if (!targetSchool) return;
+
       // 1. Fetch Class
       if (student.classId) {
         const cDoc = await getDoc(doc(db, 'classes', student.classId));
         if (cDoc.exists()) setReportClass(cDoc.data() as SchoolClass);
       }
 
-      // 2. Fetch Results
+      // 2. Fetch Results (scoped to schoolId and PUBLISHED for PARENT)
       const resultsConstraints: any[] = [
+        where('schoolId', '==', targetSchool),
         where('studentId', '==', student.studentId),
         where('term', '==', settings.currentTerm),
         where('academicSession', '==', settings.currentAcademicSession)
       ];
-      
+      if (role === 'PARENT') {
+        resultsConstraints.push(where('status', '==', 'PUBLISHED'));
+      }
+
       const rSnap = await getDocs(
         query(collection(db, 'results'), ...resultsConstraints)
       );
@@ -99,7 +107,11 @@ export default function App() {
       // 3. Fetch Attendance for Complete Report Card
       try {
         const attSnap = await getDocs(
-          query(collection(db, 'attendance'), where('studentId', '==', student.studentId))
+          query(
+            collection(db, 'attendance'),
+            where('schoolId', '==', targetSchool),
+            where('studentId', '==', student.studentId)
+          )
         );
         let pres = 0, abs = 0, lte = 0;
         attSnap.forEach((docSnap) => {

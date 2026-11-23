@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
   Users,
@@ -17,12 +18,13 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
+import { getPathForPage } from '../../routes/routes';
 
 interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
-  currentPage: string;
-  onNavigate: (page: string) => void;
+  currentPage?: string;
+  onNavigate?: (page: string) => void;
 }
 
 interface NavItem {
@@ -142,35 +144,45 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <nav className="flex-1 px-3 py-4 overflow-y-auto space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = currentPage === item.id;
+            const targetPath = getPathForPage(item.id);
 
             return (
-              <button
+              <NavLink
                 key={item.id}
                 id={`nav-item-${item.id}`}
-                type="button"
+                to={targetPath}
                 onClick={() => {
-                  onNavigate(item.id);
+                  onNavigate?.(item.id);
                   onClose();
                 }}
-                className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm font-medium rounded-lg transition-colors min-h-[44px] text-left cursor-pointer ${
-                  isActive
-                    ? 'bg-emerald-50 text-emerald-800 font-semibold border-l-3 border-emerald-700'
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                }`}
+                className={({ isActive }) => {
+                  const active = isActive || currentPage === item.id;
+                  return `w-full flex items-center justify-between px-3.5 py-2.5 text-sm font-medium rounded-lg transition-colors min-h-[44px] text-left cursor-pointer ${
+                    active
+                      ? 'bg-emerald-50 text-emerald-800 font-semibold border-l-3 border-emerald-700'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  }`;
+                }}
               >
-                <div className="flex items-center gap-3">
-                  <Icon
-                    className={`w-4 h-4 ${isActive ? 'text-emerald-700' : 'text-slate-400'}`}
-                  />
-                  <span>{item.label}</span>
-                </div>
-                {item.badge && (
-                  <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
-                    {item.badge}
-                  </span>
-                )}
-              </button>
+                {({ isActive }) => {
+                  const active = isActive || currentPage === item.id;
+                  return (
+                    <>
+                      <div className="flex items-center gap-3">
+                        <Icon
+                          className={`w-4 h-4 ${active ? 'text-emerald-700' : 'text-slate-400'}`}
+                        />
+                        <span>{item.label}</span>
+                      </div>
+                      {item.badge && (
+                        <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                          {item.badge}
+                        </span>
+                      )}
+                    </>
+                  );
+                }}
+              </NavLink>
             );
           })}
         </nav>

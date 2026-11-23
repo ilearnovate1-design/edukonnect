@@ -42,16 +42,20 @@ export const AttendancePage: React.FC = () => {
   const [reportRecords, setReportRecords] = useState<AttendanceRecord[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
 
-  // 1. Fetch Classes (Scoped strictly to teacher assignments if role === TEACHER)
+  // 1. Fetch Classes (Scoped strictly to tenant and teacher assignments if role === TEACHER)
   useEffect(() => {
     const fetchClasses = async () => {
+      const cleanSchool = (schoolId || '').trim().toLowerCase();
+      if (!cleanSchool) {
+        setClasses([]);
+        setSelectedClassId('');
+        return;
+      }
       try {
-        const cSnap = await getDocs(collection(db, 'classes'));
+        const cSnap = await getDocs(query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)));
         let cList: SchoolClass[] = [];
         cSnap.forEach((d) => {
-          const item = d.data() as SchoolClass;
-          const matches = item.schoolId ? item.schoolId === schoolId : (schoolId === 'default' || !schoolId);
-          if (matches) cList.push(item);
+          cList.push(d.data() as SchoolClass);
         });
 
         if (role === 'TEACHER') {
@@ -62,7 +66,7 @@ export const AttendancePage: React.FC = () => {
         }
 
         setClasses(cList);
-        if (cList.length > 0 && !selectedClassId) {
+        if (cList.length > 0 && (!selectedClassId || !cList.some(c => c.classId === selectedClassId))) {
           setSelectedClassId(cList[0].classId);
         } else if (cList.length === 0) {
           setSelectedClassId('');
@@ -77,7 +81,11 @@ export const AttendancePage: React.FC = () => {
 
   // 2. Fetch Students and Attendance for selected class & date
   useEffect(() => {
-    if (!selectedClassId) return;
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!selectedClassId || !cleanSchool) {
+      setLoading(false);
+      return;
+    }
 
     const fetchAttendanceSheet = async () => {
       setLoading(true);
@@ -87,31 +95,30 @@ export const AttendancePage: React.FC = () => {
         // Fetch active students in this class
         const sQuery = query(
           collection(db, 'students'),
+          where('schoolId', '==', cleanSchool),
           where('classId', '==', selectedClassId),
           where('status', '==', 'ACTIVE')
         );
         const sSnap = await getDocs(sQuery);
         const sList: Student[] = [];
         sSnap.forEach((d) => sList.push(d.data() as Student));
-        // Sort students alphabetically by first name
         sList.sort((a, b) => a.firstName.localeCompare(b.firstName));
         setStudents(sList);
 
         // Fetch existing attendance records for this date & class
         const attQuery = query(
           collection(db, 'attendance'),
+          where('schoolId', '==', cleanSchool),
           where('classId', '==', selectedClassId),
           where('date', '==', selectedDate)
         );
         const attSnap = await getDocs(attQuery);
         const aMap = new Map<string, { status: AttendanceStatus | 'UNMARKED'; timeIn?: any; timeOut?: any }>();
 
-        // Pre-fill UNMARKED
         sList.forEach((s) => {
           aMap.set(s.studentId, { status: 'UNMARKED' });
         });
 
-        // Overlay existing
         attSnap.forEach((d) => {
           const rec = d.data() as AttendanceRecord;
           aMap.set(rec.studentId, {
@@ -130,7 +137,7 @@ export const AttendancePage: React.FC = () => {
     };
 
     fetchAttendanceSheet();
-  }, [selectedClassId, selectedDate]);
+  }, [selectedClassId, selectedDate, schoolId]);
 
   // Mark status for a specific pupil
   const setStudentStatus = (studentId: string, status: AttendanceStatus) => {
@@ -167,12 +174,14 @@ export const AttendancePage: React.FC = () => {
 
     // Save out time immediately
     try {
+      const cleanSchool = (schoolId || '').trim().toLowerCase();
+      if (!cleanSchool) return;
       const attendanceId = `${selectedDate}_${studentId}`;
       const docRef = doc(db, 'attendance', attendanceId);
       await setDoc(docRef, {
         timeOut: serverTimestamp(),
         updatedAt: serverTimestamp(),
-        schoolId: schoolId || 'default',
+        schoolId: cleanSchool,
       }, { merge: true });
     } catch(err) {
       console.error(err);
@@ -210,6 +219,11 @@ export const AttendancePage: React.FC = () => {
   // Save Attendance to Firestore
   const handleSaveAttendance = async () => {
     if (saving) return;
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) {
+      setErrorMessage('Verified school membership is required to save attendance.');
+      return;
+    }
     if (!selectedClassId) {
       setErrorMessage('Please select a valid classroom arm.');
       return;
@@ -233,13 +247,12 @@ export const AttendancePage: React.FC = () => {
       students.forEach((student) => {
         const item = attendanceMap.get(student.studentId);
         if (item && item.status !== 'UNMARKED') {
-          // Deterministic ID: YYYY-MM-DD_studentId
           const attendanceId = `${selectedDate}_${student.studentId}`;
           const docRef = doc(db, 'attendance', attendanceId);
 
           const payload: any = {
             attendanceId,
-            schoolId: schoolId || 'default',
+            schoolId: cleanSchool,
             studentId: student.studentId,
             classId: selectedClassId,
             date: selectedDate,
@@ -248,7 +261,6 @@ export const AttendancePage: React.FC = () => {
             updatedAt: serverTimestamp(),
           };
 
-          // Use serverTimestamp for new entries, keep existing if already a Firestore timestamp
           if (item.timeIn && !item.timeIn.seconds) {
             payload.timeIn = serverTimestamp();
           } else if (item.timeIn) {
@@ -278,7 +290,7 @@ export const AttendancePage: React.FC = () => {
         'attendance',
         `${selectedDate}_${selectedClassId}`,
         `Saved attendance for ${markedCount} pupils on ${selectedDate}`,
-        schoolId || 'default'
+        cleanSchool
       );
 
       setSuccessMessage(`Attendance saved successfully! ${markedCount} pupils logged for ${formatDate(selectedDate)}.`);
@@ -292,16 +304,20 @@ export const AttendancePage: React.FC = () => {
 
   // Load Attendance Reports
   const generateReport = async () => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) return;
     setLoadingReport(true);
     try {
       let q = query(
         collection(db, 'attendance'),
+        where('schoolId', '==', cleanSchool),
         where('classId', '==', selectedClassId)
       );
 
       if (reportStudentId !== 'ALL') {
         q = query(
           collection(db, 'attendance'),
+          where('schoolId', '==', cleanSchool),
           where('studentId', '==', reportStudentId)
         );
       }

@@ -72,7 +72,10 @@ export const ParentsPage: React.FC = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const pSnap = await getDocs(collection(db, 'parents'));
+      const cleanSchool = schoolId?.trim().toLowerCase();
+      const pSnap = await getDocs(
+        cleanSchool ? query(collection(db, 'parents'), where('schoolId', '==', cleanSchool)) : collection(db, 'parents')
+      );
       const pList: Parent[] = [];
       pSnap.forEach((d) => {
         const item = d.data() as Parent;
@@ -80,15 +83,18 @@ export const ParentsPage: React.FC = () => {
       });
       setParents(pList);
 
-      const sSnap = await getDocs(collection(db, 'students'));
+      const sSnap = await getDocs(
+        cleanSchool ? query(collection(db, 'students'), where('schoolId', '==', cleanSchool)) : collection(db, 'students')
+      );
       const sList: Student[] = [];
       sSnap.forEach((d) => {
         const item = d.data() as Student;
         if (matchesTenant(item.schoolId)) sList.push(item);
       });
-      if (schoolId) {
+      setStudents(sList);
+      if (cleanSchool) {
         try {
-          const invList = await getSchoolInvitations(schoolId);
+          const invList = await getSchoolInvitations(cleanSchool);
           setInvitations(invList.filter((i) => i.role === 'PARENT'));
         } catch (invErr) {
           console.warn('Parent invitations notice:', invErr);
@@ -260,7 +266,7 @@ export const ParentsPage: React.FC = () => {
             `${firstName.trim()} ${lastName.trim()}`,
             'PARENT',
             normalizedSchoolId,
-            { parentId: pId }
+            { parentId: pId, linkedStudentIds: selectedChildIds, schoolName: settings.schoolName || '' }
           );
           resolvedUserId = uid;
           payload.userId = uid;
@@ -272,7 +278,13 @@ export const ParentsPage: React.FC = () => {
       // If user ID was not assigned yet, check if a user document exists with this email
       if (!resolvedUserId) {
         try {
-          const uSnap = await getDocs(query(collection(db, 'users'), where('email', '==', normalizedEmail)));
+          const uSnap = await getDocs(
+            query(
+              collection(db, 'users'),
+              where('schoolId', '==', normalizedSchoolId),
+              where('email', '==', normalizedEmail)
+            )
+          );
           if (!uSnap.empty) {
             resolvedUserId = uSnap.docs[0].id;
             payload.userId = resolvedUserId;
@@ -282,8 +294,31 @@ export const ParentsPage: React.FC = () => {
         }
       }
 
-      // Keep user doc securely in sync with verified schoolId, role, and parentId
+      // Keep user doc & authoritative membership doc securely in sync
       if (resolvedUserId) {
+        const membershipId = `${normalizedSchoolId}_${resolvedUserId}`;
+        try {
+          await setDoc(
+            doc(db, 'memberships', membershipId),
+            {
+              id: membershipId,
+              userId: resolvedUserId,
+              userEmail: normalizedEmail,
+              schoolId: normalizedSchoolId,
+              schoolName: settings.schoolName || '',
+              role: 'PARENT',
+              status: 'ACTIVE',
+              parentId: pId,
+              linkedStudentIds: selectedChildIds,
+              updatedAt: serverTimestamp(),
+              ...(editingParent ? {} : { createdAt: serverTimestamp(), activatedAt: serverTimestamp() }),
+            },
+            { merge: true }
+          );
+        } catch (memErr) {
+          console.warn('Parent membership sync notice:', memErr);
+        }
+
         try {
           await setDoc(doc(db, 'users', resolvedUserId), {
             schoolId: normalizedSchoolId,
@@ -291,6 +326,7 @@ export const ParentsPage: React.FC = () => {
             parentId: pId,
             displayName: `${firstName.trim()} ${lastName.trim()}`,
             approvalStatus: 'APPROVED',
+            active: true,
             updatedAt: serverTimestamp()
           }, { merge: true });
         } catch (syncErr) {
@@ -319,18 +355,21 @@ export const ParentsPage: React.FC = () => {
 
         const isSelected = selectedChildIds.includes(student.studentId);
         const currentParents = student.parentIds || [];
+        const currentEmails = student.parentEmails || [];
         const hasParent = currentParents.includes(pId);
 
         if (isSelected && !hasParent) {
           // link
           await updateDoc(doc(db, 'students', student.studentId), {
-            parentIds: [...currentParents, pId],
+            parentIds: Array.from(new Set([...currentParents, pId])),
+            parentEmails: Array.from(new Set([...currentEmails, normalizedEmail])),
             updatedAt: serverTimestamp(),
           });
         } else if (!isSelected && hasParent) {
           // unlink
           await updateDoc(doc(db, 'students', student.studentId), {
             parentIds: currentParents.filter((id) => id !== pId),
+            parentEmails: currentEmails.filter((em) => em.toLowerCase().trim() !== normalizedEmail),
             updatedAt: serverTimestamp(),
           });
         }

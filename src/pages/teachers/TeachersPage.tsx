@@ -74,7 +74,10 @@ export const TeachersPage: React.FC = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const tSnap = await getDocs(collection(db, 'teachers'));
+      const cleanSchool = schoolId?.trim().toLowerCase();
+      const tSnap = await getDocs(
+        cleanSchool ? query(collection(db, 'teachers'), where('schoolId', '==', cleanSchool)) : collection(db, 'teachers')
+      );
       const tList: Teacher[] = [];
       tSnap.forEach((d) => {
         const item = d.data() as Teacher;
@@ -84,7 +87,9 @@ export const TeachersPage: React.FC = () => {
       });
       setTeachers(tList);
 
-      const cSnap = await getDocs(collection(db, 'classes'));
+      const cSnap = await getDocs(
+        cleanSchool ? query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)) : collection(db, 'classes')
+      );
       const cList: SchoolClass[] = [];
       cSnap.forEach((d) => {
         const item = d.data() as SchoolClass;
@@ -94,7 +99,9 @@ export const TeachersPage: React.FC = () => {
       });
       setClasses(cList);
 
-      const subSnap = await getDocs(collection(db, 'subjects'));
+      const subSnap = await getDocs(
+        cleanSchool ? query(collection(db, 'subjects'), where('schoolId', '==', cleanSchool)) : collection(db, 'subjects')
+      );
       const subList: Subject[] = [];
       subSnap.forEach((d) => {
         const item = d.data() as Subject;
@@ -104,9 +111,9 @@ export const TeachersPage: React.FC = () => {
       });
       setSubjects(subList);
 
-      if (schoolId) {
+      if (cleanSchool) {
         try {
-          const invList = await getSchoolInvitations(schoolId);
+          const invList = await getSchoolInvitations(cleanSchool);
           setInvitations(invList);
         } catch (invErr) {
           console.warn('Invitations load notice:', invErr);
@@ -131,6 +138,9 @@ export const TeachersPage: React.FC = () => {
     }
 
     const nextStatus = teacher.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    const nextMembershipStatus = nextStatus === 'ACTIVE' ? 'ACTIVE' : 'SUSPENDED';
+    const tSchool = (teacher.schoolId || adminSchool || '').trim().toLowerCase();
+
     try {
       await updateDoc(doc(db, 'teachers', teacher.teacherId), {
         status: nextStatus,
@@ -143,6 +153,29 @@ export const TeachersPage: React.FC = () => {
             updatedAt: serverTimestamp(),
           });
         } catch (uErr) {}
+
+        if (tSchool) {
+          try {
+            const membershipId = `${tSchool}_${teacher.userId}`;
+            await setDoc(
+              doc(db, 'memberships', membershipId),
+              {
+                id: membershipId,
+                userId: teacher.userId,
+                userEmail: teacher.email.toLowerCase().trim(),
+                schoolId: tSchool,
+                schoolName: settings.schoolName || '',
+                role: 'TEACHER',
+                status: nextMembershipStatus,
+                teacherId: teacher.teacherId,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          } catch (mErr) {
+            console.warn('Membership status sync notice:', mErr);
+          }
+        }
       }
       await logAudit(
         currentUser?.uid || 'admin',
@@ -150,7 +183,7 @@ export const TeachersPage: React.FC = () => {
         'teachers',
         teacher.teacherId,
         `Changed teacher ${teacher.firstName} ${teacher.lastName} status to ${nextStatus}`,
-        teacher.schoolId || adminSchool || 'default'
+        tSchool || 'default'
       );
       await fetchData();
     } catch (err: any) {
@@ -309,7 +342,7 @@ export const TeachersPage: React.FC = () => {
             `${firstName.trim()} ${lastName.trim()}`,
             'TEACHER',
             normalizedSchoolId,
-            { teacherId: tId, assignedClassIds }
+            { teacherId: tId, assignedClassIds, schoolName: settings.schoolName || '' }
           );
           resolvedUserId = uid;
           payload.userId = uid;
@@ -321,7 +354,13 @@ export const TeachersPage: React.FC = () => {
       // If user ID was not assigned yet, check if a user document exists with this email
       if (!resolvedUserId) {
         try {
-          const uSnap = await getDocs(query(collection(db, 'users'), where('email', '==', normalizedEmail)));
+          const uSnap = await getDocs(
+            query(
+              collection(db, 'users'),
+              where('schoolId', '==', normalizedSchoolId),
+              where('email', '==', normalizedEmail)
+            )
+          );
           if (!uSnap.empty) {
             resolvedUserId = uSnap.docs[0].id;
             payload.userId = resolvedUserId;
@@ -331,8 +370,30 @@ export const TeachersPage: React.FC = () => {
         }
       }
 
-      // Keep user doc securely in sync with verified schoolId, role, and assignments
+      // Keep user doc and authoritative membership doc securely in sync
       if (resolvedUserId) {
+        const membershipId = `${normalizedSchoolId}_${resolvedUserId}`;
+        try {
+          await setDoc(
+            doc(db, 'memberships', membershipId),
+            {
+              id: membershipId,
+              userId: resolvedUserId,
+              userEmail: normalizedEmail,
+              schoolId: normalizedSchoolId,
+              schoolName: settings.schoolName || '',
+              role: 'TEACHER',
+              status: status === 'ACTIVE' ? 'ACTIVE' : 'SUSPENDED',
+              teacherId: tId,
+              updatedAt: serverTimestamp(),
+              ...(editingTeacher ? {} : { createdAt: serverTimestamp(), activatedAt: serverTimestamp() }),
+            },
+            { merge: true }
+          );
+        } catch (memErr) {
+          console.warn('Membership sync notice:', memErr);
+        }
+
         try {
           await setDoc(doc(db, 'users', resolvedUserId), {
             schoolId: normalizedSchoolId,
@@ -341,6 +402,7 @@ export const TeachersPage: React.FC = () => {
             assignedClassIds,
             displayName: `${firstName.trim()} ${lastName.trim()}`,
             approvalStatus: 'APPROVED',
+            active: status === 'ACTIVE',
             updatedAt: serverTimestamp()
           }, { merge: true });
         } catch (syncErr) {
@@ -997,6 +1059,35 @@ export const TeachersPage: React.FC = () => {
                         className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                       />
                       <span className="text-slate-800 font-medium">{cls.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Assigned Subjects */}
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                Teaching Subjects <span className="text-[10px] font-normal normal-case text-slate-400">(Leave unchecked for all school subjects)</span>
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg max-h-36 overflow-y-auto">
+                {subjects.map((sub) => {
+                  const isSelected = inviteSubjects.includes(sub.name) || inviteSubjects.includes(sub.subjectId);
+                  return (
+                    <label key={sub.subjectId} className="flex items-center gap-2 text-xs cursor-pointer p-1">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setInviteSubjects([...inviteSubjects, sub.name]);
+                          } else {
+                            setInviteSubjects(inviteSubjects.filter((s) => s !== sub.name && s !== sub.subjectId));
+                          }
+                        }}
+                        className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span className="text-slate-800 font-medium">{sub.name}</span>
                     </label>
                   );
                 })}

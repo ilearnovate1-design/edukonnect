@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  collection, getDocs, doc, setDoc, deleteDoc, serverTimestamp 
+  collection, getDocs, doc, setDoc, deleteDoc, serverTimestamp, query, where 
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { Subject, Teacher } from '../../types';
@@ -38,7 +38,7 @@ interface SubjectsManagementProps {
 }
 
 export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjectsUpdated }) => {
-  const { role, currentUser } = useAuth();
+  const { role, currentUser, isSuperAdmin } = useAuth();
   const { schoolId } = useSchool();
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
@@ -69,13 +69,26 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
   const [seedSuccess, setSeedSuccess] = useState('');
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) return isSuperAdmin;
+    return (itemSchoolId || '').trim().toLowerCase() === cleanSchool;
   };
 
   const fetchSubjectsAndTeachers = async () => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool && !isSuperAdmin) {
+      setSubjects([]);
+      setTeachers([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
-      const sSnap = await getDocs(collection(db, 'subjects'));
+      const sQuery = cleanSchool
+        ? query(collection(db, 'subjects'), where('schoolId', '==', cleanSchool))
+        : collection(db, 'subjects');
+      const sSnap = await getDocs(sQuery);
       const sList: Subject[] = [];
       sSnap.forEach((d) => {
         const item = d.data() as Subject;
@@ -87,7 +100,10 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
       sList.sort((a, b) => a.name.localeCompare(b.name));
       setSubjects(sList);
 
-      const tSnap = await getDocs(collection(db, 'teachers'));
+      const tQuery = cleanSchool
+        ? query(collection(db, 'teachers'), where('schoolId', '==', cleanSchool))
+        : collection(db, 'teachers');
+      const tSnap = await getDocs(tQuery);
       const tList: Teacher[] = [];
       tSnap.forEach((d) => {
         const item = d.data() as Teacher;
@@ -151,9 +167,12 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
     setSaving(true);
     setFormError('');
     try {
-      const targetSchoolId = editingSubject?.schoolId || schoolId || 'default';
+      const targetSchoolId = (editingSubject?.schoolId || schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId || (targetSchoolId === 'default' && !isSuperAdmin && !editingSubject?.schoolId)) {
+        throw new Error('Cannot save subject: No verified school context available.');
+      }
       const cleanSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-      const subId = editingSubject?.subjectId || (targetSchoolId === 'default' ? `sub-${cleanSlug}` : `sub-${targetSchoolId}-${cleanSlug}`);
+      const subId = editingSubject?.subjectId || `sub-${targetSchoolId}-${cleanSlug}`;
       const docRef = doc(db, 'subjects', subId);
 
       const payload: Partial<Subject> = {
@@ -214,7 +233,7 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
         'subjects',
         sub.subjectId,
         `Toggled subject ${sub.name} to ${newStatus ? 'active' : 'inactive'}`,
-        sub.schoolId || schoolId || 'default'
+        sub.schoolId || schoolId || ''
       );
     } catch (err) {
       console.error('Error toggling subject status:', err);
@@ -233,7 +252,7 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
         'subjects',
         deletingSubject.subjectId,
         `Deleted subject ${deletingSubject.name}`,
-        deletingSubject.schoolId || schoolId || 'default'
+        deletingSubject.schoolId || schoolId || ''
       );
 
       setDeletingSubject(null);
@@ -250,7 +269,10 @@ export const SubjectsManagement: React.FC<SubjectsManagementProps> = ({ onSubjec
     setSeeding(true);
     setSeedSuccess('');
     try {
-      const targetSchoolId = schoolId || 'default';
+      const targetSchoolId = (schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId || (targetSchoolId === 'default' && !isSuperAdmin)) {
+        throw new Error('Cannot seed curriculum: No verified school context available.');
+      }
       const result = await seedStandardCurriculumForSchool(targetSchoolId);
 
       await logAudit(

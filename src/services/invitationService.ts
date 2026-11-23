@@ -365,6 +365,7 @@ export async function acceptAndActivateInvitation(params: {
     schoolName: invitation.schoolName,
     role: invitation.role,
     status: 'ACTIVE',
+    invitationId: invitation.id,
     activatedAt: serverTimestamp(),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),

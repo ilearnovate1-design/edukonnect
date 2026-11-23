@@ -77,10 +77,13 @@ export const AssignmentsPage: React.FC = () => {
   };
   
   const handleViewSubmissions = async (assignment: Assignment) => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) return;
     setLoading(true);
     try {
       const q = query(
         collection(db, 'students'),
+        where('schoolId', '==', cleanSchool),
         where('classId', '==', assignment.classId),
         where('status', '==', 'ACTIVE')
       );
@@ -100,6 +103,15 @@ export const AssignmentsPage: React.FC = () => {
   };
 
   const fetchData = async () => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) {
+      setAssignments([]);
+      setClasses([]);
+      setSubjects([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
       let parentChildClassIds = new Set<string>();
@@ -109,7 +121,7 @@ export const AssignmentsPage: React.FC = () => {
         const userEmail = currentUser?.email?.toLowerCase().trim();
         if (userEmail) {
           try {
-            const sSnap = await getDocs(query(collection(db, 'students'), where('parentEmails', 'array-contains', userEmail)));
+            const sSnap = await getDocs(query(collection(db, 'students'), where('schoolId', '==', cleanSchool), where('parentEmails', 'array-contains', userEmail)));
             sSnap.forEach(d => {
               const s = d.data() as Student;
               parentChildClassIds.add(s.classId);
@@ -119,7 +131,7 @@ export const AssignmentsPage: React.FC = () => {
         }
         if (currentParent?.parentId) {
           try {
-            const sSnap = await getDocs(query(collection(db, 'students'), where('parentIds', 'array-contains', currentParent.parentId)));
+            const sSnap = await getDocs(query(collection(db, 'students'), where('schoolId', '==', cleanSchool), where('parentIds', 'array-contains', currentParent.parentId)));
             sSnap.forEach(d => {
               const s = d.data() as Student;
               parentChildClassIds.add(s.classId);
@@ -134,7 +146,7 @@ export const AssignmentsPage: React.FC = () => {
         if (childIds.length > 0) {
           try {
             const subSnap = await getDocs(
-              query(collection(db, 'submissions'), where('studentId', 'in', childIds.slice(0, 10)))
+              query(collection(db, 'submissions'), where('schoolId', '==', cleanSchool), where('studentId', 'in', childIds.slice(0, 10)))
             );
             const sMap = new Map<string, Submission>();
             subSnap.forEach(d => {
@@ -148,11 +160,10 @@ export const AssignmentsPage: React.FC = () => {
         }
       }
 
-      const cSnap = await getDocs(collection(db, 'classes'));
+      const cSnap = await getDocs(query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)));
       let cList: SchoolClass[] = [];
       cSnap.forEach((d) => {
-        const item = d.data() as SchoolClass;
-        if (matchesTenant(item.schoolId)) cList.push(item);
+        cList.push(d.data() as SchoolClass);
       });
 
       if (role === 'TEACHER') {
@@ -168,20 +179,18 @@ export const AssignmentsPage: React.FC = () => {
       if (cList.length > 0 && !classId) setClassId(cList[0].classId);
       else if (cList.length === 0) setClassId('');
 
-      const subSnap = await getDocs(collection(db, 'subjects'));
+      const subSnap = await getDocs(query(collection(db, 'subjects'), where('schoolId', '==', cleanSchool)));
       const subList: Subject[] = [];
       subSnap.forEach((d) => {
-        const item = d.data() as Subject;
-        if (matchesTenant(item.schoolId)) subList.push(item);
+        subList.push(d.data() as Subject);
       });
       setSubjects(subList);
       if (subList.length > 0 && !subjectId) setSubjectId(subList[0].subjectId);
 
-      const aSnap = await getDocs(query(collection(db, 'assignments'), orderBy('createdAt', 'desc'), limit(100)));
+      const aSnap = await getDocs(query(collection(db, 'assignments'), where('schoolId', '==', cleanSchool), limit(100)));
       let aList: Assignment[] = [];
       aSnap.forEach((d) => {
-        const item = d.data() as Assignment;
-        if (matchesTenant(item.schoolId)) aList.push(item);
+        aList.push(d.data() as Assignment);
       });
 
       if (role === 'TEACHER') {
@@ -227,14 +236,19 @@ export const AssignmentsPage: React.FC = () => {
       return;
     }
 
+    const cleanSchool = (editingAssignment?.schoolId || schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) {
+      setFormError('Verified school membership is required to save assignments.');
+      return;
+    }
+
     setSaving(true);
     setFormError('');
     try {
       const aId = editingAssignment?.assignmentId || `assign-${Date.now()}`;
-      const targetSchoolId = editingAssignment?.schoolId || schoolId || 'default';
       const payload: Partial<Assignment> = {
         assignmentId: aId,
-        schoolId: targetSchoolId,
+        schoolId: cleanSchool,
         title: title.trim(),
         description: description.trim(),
         classId,
@@ -260,7 +274,7 @@ export const AssignmentsPage: React.FC = () => {
           'assignments',
           aId,
           `${editingAssignment ? 'Updated' : 'Created'} homework: "${title}" for ${classId}`,
-          targetSchoolId
+          cleanSchool
         );
       } catch (auditErr) {
         console.warn('Could not record assignment audit log:', auditErr);

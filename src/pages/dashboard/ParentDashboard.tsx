@@ -57,37 +57,38 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
     const fetchLinkedChildren = async () => {
       setLoading(true);
       try {
-        // Classes map
-        const cSnap = await getDocs(collection(db, 'classes'));
+        const verifiedSchool = (schoolId || appUser?.schoolId || '').toLowerCase().trim();
+        if (!verifiedSchool) {
+          setClassesMap(new Map());
+          setChildren([]);
+          setLoading(false);
+          return;
+        }
+
+        // Classes map (scoped by schoolId)
+        const cSnap = await getDocs(query(collection(db, 'classes'), where('schoolId', '==', verifiedSchool)));
         const cMap = new Map<string, SchoolClass>();
         cSnap.forEach((d) => {
           const c = d.data() as SchoolClass;
-          if (matchesTenant(c.schoolId)) {
-            cMap.set(c.classId, c);
-          }
+          cMap.set(c.classId, c);
         });
         setClassesMap(cMap);
 
-        // Fetch students safely using both email and parentId
+        // Fetch students safely using both email and parentId within verifiedSchool
         let studentsList: Student[] = [];
         const userEmail = currentUser?.email?.toLowerCase().trim();
 
-        const verifiedSchool = (schoolId || appUser?.schoolId || '').toLowerCase().trim();
-
-        // 1. Fetch by email (robust against race conditions because token.email is always present)
+        // 1. Fetch by email
         if (userEmail) {
           try {
             const sQuery = query(
               collection(db, 'students'),
+              where('schoolId', '==', verifiedSchool),
               where('parentEmails', 'array-contains', userEmail)
             );
             const sSnap = await getDocs(sQuery);
             sSnap.forEach((d) => {
-              const s = d.data() as Student;
-              const sSchool = (s.schoolId || '').toLowerCase().trim();
-              if (!verifiedSchool || !sSchool || sSchool === verifiedSchool) {
-                studentsList.push(s);
-              }
+              studentsList.push(d.data() as Student);
             });
           } catch (e) {
             console.warn('Failed to fetch by parentEmails:', e);
@@ -99,13 +100,13 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
           try {
             const sQuery = query(
               collection(db, 'students'),
+              where('schoolId', '==', verifiedSchool),
               where('parentIds', 'array-contains', currentParent.parentId)
             );
             const sSnap = await getDocs(sQuery);
             sSnap.forEach((d) => {
               const s = d.data() as Student;
-              const sSchool = (s.schoolId || '').toLowerCase().trim();
-              if ((!verifiedSchool || !sSchool || sSchool === verifiedSchool) && !studentsList.find(item => item.studentId === d.id)) {
+              if (!studentsList.find(item => item.studentId === d.id)) {
                 studentsList.push(s);
               }
             });
@@ -114,21 +115,20 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
           }
         }
 
-        // 3. Last fallback: Look up parent by email if currentParent was somehow delayed
+        // 3. Last fallback: Look up parent by email
         if (studentsList.length === 0 && userEmail && !currentParent) {
           try {
             const pSnap = await getDocs(
-              query(collection(db, 'parents'), where('email', '==', userEmail))
+              query(collection(db, 'parents'), where('schoolId', '==', verifiedSchool), where('email', '==', userEmail))
             );
             if (!pSnap.empty) {
               const pid = pSnap.docs[0].id;
               const sSnap = await getDocs(
-                query(collection(db, 'students'), where('parentIds', 'array-contains', pid))
+                query(collection(db, 'students'), where('schoolId', '==', verifiedSchool), where('parentIds', 'array-contains', pid))
               );
               sSnap.forEach((d) => {
                 const s = d.data() as Student;
-                const sSchool = (s.schoolId || '').toLowerCase().trim();
-                if ((!verifiedSchool || !sSchool || sSchool === verifiedSchool) && !studentsList.find(item => item.studentId === d.id)) {
+                if (!studentsList.find(item => item.studentId === d.id)) {
                   studentsList.push(s);
                 }
               });
@@ -161,10 +161,18 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
         const today = getTodayDateString();
         const selectedChild = children.find((c) => c.studentId === selectedChildId);
 
+        const childSchool = (selectedChild?.schoolId || schoolId || appUser?.schoolId || '').toLowerCase().trim();
+        if (!childSchool) return;
+
         // A. Today's Attendance
         try {
           const attSnap = await getDocs(
-            query(collection(db, 'attendance'), where('studentId', '==', selectedChildId), where('date', '==', today))
+            query(
+              collection(db, 'attendance'),
+              where('schoolId', '==', childSchool),
+              where('studentId', '==', selectedChildId),
+              where('date', '==', today)
+            )
           );
           if (!attSnap.empty) {
             setTodayAttendance(attSnap.docs[0].data() as AttendanceRecord);
@@ -178,7 +186,11 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
         // B. Attendance History Summary
         try {
           const allAttSnap = await getDocs(
-            query(collection(db, 'attendance'), where('studentId', '==', selectedChildId))
+            query(
+              collection(db, 'attendance'),
+              where('schoolId', '==', childSchool),
+              where('studentId', '==', selectedChildId)
+            )
           );
           let present = 0, absent = 0, late = 0;
           allAttSnap.forEach((d) => {
@@ -200,6 +212,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
             const fSnap = await getDocs(
               query(
                 collection(db, 'feeStructures'),
+                where('schoolId', '==', childSchool),
                 where('classId', '==', selectedChild.classId)
               )
             );
@@ -217,6 +230,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
             const pSnap = await getDocs(
               query(
                 collection(db, 'payments'),
+                where('schoolId', '==', childSchool),
                 where('studentId', '==', selectedChildId),
                 where('academicSession', '==', settings.currentAcademicSession),
                 where('term', '==', settings.currentTerm)
@@ -236,12 +250,14 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
           }
         }
 
-        // D. Published Results
+        // D. Published Results (strictly constrained to status == 'PUBLISHED')
         try {
           const rSnap = await getDocs(
             query(
               collection(db, 'results'),
-              where('studentId', '==', selectedChildId)
+              where('schoolId', '==', childSchool),
+              where('studentId', '==', selectedChildId),
+              where('status', '==', 'PUBLISHED')
             )
           );
           const rList: Result[] = [];
@@ -260,6 +276,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
             const aSnap = await getDocs(
               query(
                 collection(db, 'assignments'),
+                where('schoolId', '==', childSchool),
                 where('classId', '==', selectedChild.classId)
               )
             );
@@ -277,12 +294,17 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
         // F. Announcements
         try {
           const annSnap = await getDocs(
-            query(collection(db, 'announcements'), where('audience', 'in', ['ALL', 'PARENTS']), limit(20))
+            query(
+              collection(db, 'announcements'),
+              where('schoolId', '==', childSchool),
+              where('audience', 'in', ['ALL', 'PARENTS']),
+              limit(20)
+            )
           );
           const annList: Announcement[] = [];
           annSnap.forEach((d) => {
             const ann = d.data() as Announcement;
-            if (matchesTenant(ann.schoolId) && annList.length < 4) {
+            if (annList.length < 4) {
               annList.push(ann);
             }
           });
@@ -294,7 +316,11 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
         // G. Pupil Homework Submissions
         try {
           const subSnap = await getDocs(
-            query(collection(db, 'submissions'), where('studentId', '==', selectedChildId))
+            query(
+              collection(db, 'submissions'),
+              where('schoolId', '==', childSchool),
+              where('studentId', '==', selectedChildId)
+            )
           );
           const sMap = new Map<string, Submission>();
           subSnap.forEach((d) => {
@@ -657,17 +683,24 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
             assignment={selectedAssignmentForSubmission}
             student={selectedChild || null}
             onSuccess={() => {
-              if (selectedChildId) {
-                getDocs(
-                  query(collection(db, 'submissions'), where('studentId', '==', selectedChildId))
-                ).then((snap) => {
-                  const sMap = new Map<string, Submission>();
-                  snap.forEach((d) => {
-                    const s = d.data() as Submission;
-                    sMap.set(s.assignmentId, s);
-                  });
-                  setSubmissionsMap(sMap);
-                }).catch(console.warn);
+              if (selectedChildId && selectedChild) {
+                const childSchool = (selectedChild.schoolId || schoolId || appUser?.schoolId || '').toLowerCase().trim();
+                if (childSchool) {
+                  getDocs(
+                    query(
+                      collection(db, 'submissions'),
+                      where('schoolId', '==', childSchool),
+                      where('studentId', '==', selectedChildId)
+                    )
+                  ).then((snap) => {
+                    const sMap = new Map<string, Submission>();
+                    snap.forEach((d) => {
+                      const s = d.data() as Submission;
+                      sMap.set(s.assignmentId, s);
+                    });
+                    setSubmissionsMap(sMap);
+                  }).catch(console.warn);
+                }
               }
             }}
           />

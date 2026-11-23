@@ -55,11 +55,13 @@ export const sanitizeFirestoreData = <T>(data: T): T => {
 /**
  * Fetch all grading profiles for a tenant school
  */
-export const fetchGradingProfiles = async (schoolId: string = 'default'): Promise<GradingProfile[]> => {
+export const fetchGradingProfiles = async (schoolId: string): Promise<GradingProfile[]> => {
+  const cleanSchool = (schoolId || '').trim().toLowerCase();
+  if (!cleanSchool) return [];
   try {
     const q = query(
       collection(db, PROFILES_COLLECTION),
-      where('schoolId', '==', schoolId)
+      where('schoolId', '==', cleanSchool)
     );
     const snap = await getDocs(q);
     const list: GradingProfile[] = [];
@@ -69,7 +71,7 @@ export const fetchGradingProfiles = async (schoolId: string = 'default'): Promis
 
     // If no profiles exist for this school yet, auto-seed default configurable profiles
     if (list.length === 0) {
-      return await seedDefaultGradingProfilesForSchool(schoolId);
+      return await seedDefaultGradingProfilesForSchool(cleanSchool);
     }
 
     return list.sort((a, b) => a.name.localeCompare(b.name));
@@ -82,7 +84,9 @@ export const fetchGradingProfiles = async (schoolId: string = 'default'): Promis
 /**
  * Seed editable starter profiles for a school
  */
-export const seedDefaultGradingProfilesForSchool = async (schoolId: string = 'default'): Promise<GradingProfile[]> => {
+export const seedDefaultGradingProfilesForSchool = async (schoolId: string): Promise<GradingProfile[]> => {
+  const cleanSchool = (schoolId || '').trim().toLowerCase();
+  if (!cleanSchool) return [];
   const batch = writeBatch(db);
   const profilesToSeed: GradingProfile[] = [];
 
@@ -90,11 +94,11 @@ export const seedDefaultGradingProfilesForSchool = async (schoolId: string = 'de
 
   for (const cat of categories) {
     const template = DEFAULT_GRADING_PROFILES[cat];
-    const profileId = `gp_${schoolId}_${cat.toLowerCase()}`;
+    const profileId = `gp_${cleanSchool}_${cat.toLowerCase()}`;
     const profile: GradingProfile = {
       ...template,
       profileId,
-      schoolId,
+      schoolId: cleanSchool,
       version: 1,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),

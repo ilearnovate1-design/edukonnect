@@ -13,6 +13,7 @@ export interface SchoolMembership {
   teacherId?: string;
   parentId?: string;
   linkedStudentIds?: string[];
+  invitationId?: string;
   invitedBy?: string;
   invitedAt?: any;
   activatedAt?: any;
@@ -105,6 +106,7 @@ export interface Parent {
   address?: string;
   relationship?: string; // Father, Mother, Guardian
   occupation?: string;
+  status?: 'ACTIVE' | 'INACTIVE';
   tempPassword?: string; // Default password for initial login
   createdAt: any;
   updatedAt: any;

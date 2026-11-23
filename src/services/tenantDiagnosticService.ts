@@ -1,29 +1,39 @@
 /**
  * Diagnostic & Audit Service for Teacher & Parent School Assignment Integrity
- * 
+ *
  * Audits Firestore for:
  * - Missing school IDs on teachers and parents
+ * - Missing or suspended authoritative /memberships/{schoolId}_{uid} documents
  * - School IDs that do not match user documents
  * - Inconsistent references to 'default'
  * - Cross-school parent-child relationships
- * 
+ *
  * Adheres strictly to production safety:
  * Never modifies or overwrites data without an explicit, approved repair plan.
  */
 
-import { collection, getDocs, doc, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, getDoc, doc, query, where, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from './firebase';
-import { Teacher, Parent, Student, AppUser } from '../types';
+import { Teacher, Parent, Student, AppUser, SchoolMembership } from '../types';
 
 export interface AccountAuditIssue {
-  type: 'MISSING_SCHOOL_ID' | 'MISMATCHED_USER_SCHOOL' | 'INCONSISTENT_DEFAULT_SCHOOL' | 'CROSS_SCHOOL_PARENT_CHILD' | 'ORPHANED_USER_ROLE';
+  type:
+    | 'MISSING_SCHOOL_ID'
+    | 'MISSING_MEMBERSHIP'
+    | 'MISMATCHED_USER_SCHOOL'
+    | 'INCONSISTENT_DEFAULT_SCHOOL'
+    | 'CROSS_SCHOOL_PARENT_CHILD'
+    | 'ORPHANED_USER_ROLE';
   severity: 'HIGH' | 'MEDIUM' | 'LOW';
-  collection: 'teachers' | 'parents' | 'users' | 'students';
+  collection: 'teachers' | 'parents' | 'users' | 'students' | 'memberships';
   documentId: string;
   email?: string;
   name?: string;
   currentSchoolId?: string;
   inferredSchoolId?: string;
+  linkedUserId?: string;
+  linkedRole?: 'TEACHER' | 'PARENT';
+  linkedEntityId?: string;
   details: string;
   canAutoRepair: boolean;
 }
@@ -44,43 +54,46 @@ export interface TenantAccountAuditReport {
 }
 
 /**
- * Non-destructive audit of all teacher and parent accounts and their school associations.
+ * Non-destructive audit of teacher, parent, and membership records.
+ * Pass filterSchoolId when invoked by a School Admin (non-superadmin) so queries remain tenant-scoped.
  */
-export async function auditTeacherAndParentAccounts(): Promise<TenantAccountAuditReport> {
+export async function auditTeacherAndParentAccounts(filterSchoolId?: string): Promise<TenantAccountAuditReport> {
   const issues: AccountAuditIssue[] = [];
+  const cleanSchool = filterSchoolId?.trim().toLowerCase() || '';
 
-  // 1. Fetch all records safely
-  const [teachersSnap, parentsSnap, usersSnap, studentsSnap, schoolsSnap] = await Promise.all([
-    getDocs(collection(db, 'teachers')),
-    getDocs(collection(db, 'parents')),
-    getDocs(collection(db, 'users')),
-    getDocs(collection(db, 'students')),
-    getDocs(collection(db, 'schools')),
+  const [teachersSnap, parentsSnap, usersSnap, studentsSnap, membershipsSnap] = await Promise.all([
+    getDocs(cleanSchool ? query(collection(db, 'teachers'), where('schoolId', '==', cleanSchool)) : collection(db, 'teachers')),
+    getDocs(cleanSchool ? query(collection(db, 'parents'), where('schoolId', '==', cleanSchool)) : collection(db, 'parents')),
+    getDocs(cleanSchool ? query(collection(db, 'users'), where('schoolId', '==', cleanSchool)) : collection(db, 'users')),
+    getDocs(cleanSchool ? query(collection(db, 'students'), where('schoolId', '==', cleanSchool)) : collection(db, 'students')),
+    getDocs(cleanSchool ? query(collection(db, 'memberships'), where('schoolId', '==', cleanSchool)) : collection(db, 'memberships')),
   ]);
 
-  const teachers = teachersSnap.docs.map(d => ({ id: d.id, ...d.data() } as Teacher & { id: string }));
-  const parents = parentsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Parent & { id: string }));
-  const users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as AppUser & { id: string }));
-  const students = studentsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Student & { id: string }));
-  const validSchoolIds = new Set(schoolsSnap.docs.map(d => d.id.toLowerCase()));
+  if (cleanSchool) {
+    await getDoc(doc(db, 'schools', cleanSchool)).catch(() => null);
+  }
 
-  // Maps for efficient lookups
+  const teachers = teachersSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Teacher & { id: string }));
+  const parents = parentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Parent & { id: string }));
+  const users = usersSnap.docs.map((d) => ({ id: d.id, ...d.data() } as AppUser & { id: string }));
+  const students = studentsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Student & { id: string }));
+  const memberships = membershipsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as SchoolMembership));
+
+  const membershipById = new Map<string, SchoolMembership>();
+  memberships.forEach((m) => membershipById.set(m.id, m));
+
   const userByUid = new Map<string, AppUser & { id: string }>();
   const userByEmail = new Map<string, AppUser & { id: string }>();
-  users.forEach(u => {
+  users.forEach((u) => {
     userByUid.set(u.uid, u);
     if (u.email) userByEmail.set(u.email.toLowerCase().trim(), u);
   });
 
-  const studentById = new Map<string, Student & { id: string }>();
-  students.forEach(s => studentById.set(s.studentId, s));
-
-  // 2. Audit Teachers
-  teachers.forEach(teacher => {
+  // Audit Teachers
+  teachers.forEach((teacher) => {
     const tEmail = teacher.email?.toLowerCase().trim();
     const tSchool = teacher.schoolId?.trim().toLowerCase();
 
-    // Check missing schoolId
     if (!tSchool) {
       issues.push({
         type: 'MISSING_SCHOOL_ID',
@@ -94,8 +107,31 @@ export async function auditTeacherAndParentAccounts(): Promise<TenantAccountAudi
       });
     }
 
-    // Cross-check linked user document
-    const linkedUser = teacher.userId ? userByUid.get(teacher.userId) : (tEmail ? userByEmail.get(tEmail) : undefined);
+    const linkedUser = teacher.userId ? userByUid.get(teacher.userId) : tEmail ? userByEmail.get(tEmail) : undefined;
+    const resolvedUid = teacher.userId || linkedUser?.uid;
+
+    if (tSchool && resolvedUid && teacher.status !== 'INACTIVE') {
+      const expectedMembershipId = `${tSchool}_${resolvedUid}`;
+      const existingMem = membershipById.get(expectedMembershipId);
+      if (!existingMem || existingMem.status !== 'ACTIVE') {
+        issues.push({
+          type: 'MISSING_MEMBERSHIP',
+          severity: 'HIGH',
+          collection: 'memberships',
+          documentId: expectedMembershipId,
+          email: teacher.email,
+          name: `${teacher.firstName} ${teacher.lastName}`,
+          currentSchoolId: existingMem?.status || 'NONE',
+          inferredSchoolId: tSchool,
+          linkedUserId: resolvedUid,
+          linkedRole: 'TEACHER',
+          linkedEntityId: teacher.teacherId,
+          details: `Teacher ${teacher.firstName} ${teacher.lastName} is missing an ACTIVE /memberships/${expectedMembershipId} record required by security rules.`,
+          canAutoRepair: true,
+        });
+      }
+    }
+
     if (linkedUser) {
       const uSchool = linkedUser.schoolId?.trim().toLowerCase();
       if (tSchool && uSchool && tSchool !== uSchool) {
@@ -116,16 +152,14 @@ export async function auditTeacherAndParentAccounts(): Promise<TenantAccountAudi
     }
   });
 
-  // 3. Audit Parents
-  parents.forEach(parent => {
+  // Audit Parents
+  parents.forEach((parent) => {
     const pEmail = parent.email?.toLowerCase().trim();
     const pSchool = parent.schoolId?.trim().toLowerCase();
 
-    // Check missing schoolId
     if (!pSchool) {
-      // Check if linked children have unambiguous schoolId
-      const linkedStudents = students.filter(s => s.parentIds?.includes(parent.parentId));
-      const childSchools = new Set(linkedStudents.map(s => s.schoolId?.toLowerCase()).filter(Boolean));
+      const linkedStudents = students.filter((s) => s.parentIds?.includes(parent.parentId));
+      const childSchools = new Set(linkedStudents.map((s) => s.schoolId?.toLowerCase()).filter(Boolean));
       const canInfer = childSchools.size === 1;
       const inferred = canInfer ? Array.from(childSchools)[0] : undefined;
 
@@ -142,8 +176,31 @@ export async function auditTeacherAndParentAccounts(): Promise<TenantAccountAudi
       });
     }
 
-    // Cross-check linked user document
-    const linkedUser = parent.userId ? userByUid.get(parent.userId) : (pEmail ? userByEmail.get(pEmail) : undefined);
+    const linkedUser = parent.userId ? userByUid.get(parent.userId) : pEmail ? userByEmail.get(pEmail) : undefined;
+    const resolvedUid = parent.userId || linkedUser?.uid;
+
+    if (pSchool && resolvedUid) {
+      const expectedMembershipId = `${pSchool}_${resolvedUid}`;
+      const existingMem = membershipById.get(expectedMembershipId);
+      if (!existingMem || existingMem.status !== 'ACTIVE') {
+        issues.push({
+          type: 'MISSING_MEMBERSHIP',
+          severity: 'HIGH',
+          collection: 'memberships',
+          documentId: expectedMembershipId,
+          email: parent.email,
+          name: `${parent.firstName} ${parent.lastName}`,
+          currentSchoolId: existingMem?.status || 'NONE',
+          inferredSchoolId: pSchool,
+          linkedUserId: resolvedUid,
+          linkedRole: 'PARENT',
+          linkedEntityId: parent.parentId,
+          details: `Parent ${parent.firstName} ${parent.lastName} is missing an ACTIVE /memberships/${expectedMembershipId} record.`,
+          canAutoRepair: true,
+        });
+      }
+    }
+
     if (linkedUser) {
       const uSchool = linkedUser.schoolId?.trim().toLowerCase();
       if (pSchool && uSchool && pSchool !== uSchool) {
@@ -164,12 +221,12 @@ export async function auditTeacherAndParentAccounts(): Promise<TenantAccountAudi
     }
   });
 
-  // 4. Audit Student-Parent Relationships for Cross-School Integrity
-  students.forEach(student => {
+  // Audit Student-Parent Relationships for Cross-School Integrity
+  students.forEach((student) => {
     const sSchool = student.schoolId?.trim().toLowerCase();
     if (student.parentIds && student.parentIds.length > 0) {
-      student.parentIds.forEach(pId => {
-        const pRecord = parents.find(p => p.parentId === pId);
+      student.parentIds.forEach((pId) => {
+        const pRecord = parents.find((p) => p.parentId === pId);
         if (pRecord && pRecord.schoolId && sSchool && pRecord.schoolId.toLowerCase() !== sSchool) {
           issues.push({
             type: 'CROSS_SCHOOL_PARENT_CHILD',
@@ -184,7 +241,7 @@ export async function auditTeacherAndParentAccounts(): Promise<TenantAccountAudi
     }
   });
 
-  const autoRepairableCount = issues.filter(i => i.canAutoRepair).length;
+  const autoRepairableCount = issues.filter((i) => i.canAutoRepair).length;
   const manualReviewRequiredCount = issues.length - autoRepairableCount;
 
   return {
@@ -195,11 +252,11 @@ export async function auditTeacherAndParentAccounts(): Promise<TenantAccountAudi
     totalStudentsScanned: students.length,
     issues,
     summary: {
-      healthyCount: (teachers.length + parents.length) - issues.length,
+      healthyCount: Math.max(0, teachers.length + parents.length - issues.length),
       issuesCount: issues.length,
       autoRepairableCount,
       manualReviewRequiredCount,
-    }
+    },
   };
 }
 
@@ -224,7 +281,27 @@ export async function executeApprovedAccountRepair(
 
   for (const issue of issuesToProcess) {
     try {
-      if (issue.type === 'MISMATCHED_USER_SCHOOL' || issue.type === 'INCONSISTENT_DEFAULT_SCHOOL') {
+      if (issue.type === 'MISSING_MEMBERSHIP' && issue.inferredSchoolId && issue.linkedUserId && issue.linkedRole) {
+        const memRef = doc(db, 'memberships', issue.documentId);
+        batch.set(
+          memRef,
+          {
+            id: issue.documentId,
+            userId: issue.linkedUserId,
+            userEmail: (issue.email || '').toLowerCase().trim(),
+            schoolId: issue.inferredSchoolId,
+            role: issue.linkedRole,
+            status: 'ACTIVE',
+            ...(issue.linkedRole === 'TEACHER' && issue.linkedEntityId ? { teacherId: issue.linkedEntityId } : {}),
+            ...(issue.linkedRole === 'PARENT' && issue.linkedEntityId ? { parentId: issue.linkedEntityId } : {}),
+            activatedAt: serverTimestamp(),
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        repairedCount++;
+      } else if (issue.type === 'MISMATCHED_USER_SCHOOL' || issue.type === 'INCONSISTENT_DEFAULT_SCHOOL') {
         if (issue.inferredSchoolId && issue.documentId) {
           const userRef = doc(db, 'users', issue.documentId);
           batch.update(userRef, {

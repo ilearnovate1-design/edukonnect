@@ -1,10 +1,10 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { 
-  getFirestore, 
-  initializeFirestore, 
-  persistentLocalCache, 
-  persistentMultipleTabManager 
+import {
+  getFirestore,
+  initializeFirestore,
+  doc,
+  getDocFromServer,
 } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import localConfig from '../../firebase-applet-config.json';
@@ -55,7 +55,16 @@ export const storage = getStorage(app);
 
 // Connectivity Test Utility
 export async function testFirestoreConnection(): Promise<boolean> {
-  return true;
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error('Please check your Firebase configuration.');
+      return false;
+    }
+    return true;
+  }
 }
 
 export default app;

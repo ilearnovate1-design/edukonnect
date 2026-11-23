@@ -61,10 +61,17 @@ export const GradingSettingsTab: React.FC = () => {
   }, [schoolId]);
 
   const loadProfiles = async () => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) {
+      setProfiles([]);
+      setActiveProfile(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setStatusMsg(null);
     try {
-      const list = await fetchGradingProfiles(schoolId || 'default');
+      const list = await fetchGradingProfiles(cleanSchool);
       setProfiles(list);
       if (list.length > 0) {
         // Select first or default
@@ -92,12 +99,17 @@ export const GradingSettingsTab: React.FC = () => {
   };
 
   const handleCreateNewProfile = (baseCategory: GradingLevelCategory = 'CUSTOM') => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) {
+      setStatusMsg({ type: 'error', text: 'Cannot create profile: No verified school context available.' });
+      return;
+    }
     const template = DEFAULT_GRADING_PROFILES[baseCategory];
-    const newId = `gp_${schoolId || 'default'}_${Date.now()}`;
+    const newId = `gp_${cleanSchool}_${Date.now()}`;
     const newProf: GradingProfile = {
       ...template,
       profileId: newId,
-      schoolId: schoolId || 'default',
+      schoolId: cleanSchool,
       name: `New ${baseCategory} Grading Profile`,
       isDefault: profiles.length === 0,
       version: 1,
@@ -191,7 +203,7 @@ export const GradingSettingsTab: React.FC = () => {
           'gradingProfiles',
           activeProfile.profileId,
           `Saved grading profile "${activeProfile.name}" (Version ${activeProfile.version})`,
-          schoolId || 'default'
+          activeProfile.schoolId || schoolId || ''
         );
 
         setStatusMsg({
@@ -233,7 +245,7 @@ export const GradingSettingsTab: React.FC = () => {
         'gradingProfiles',
         activeProfile.profileId,
         `Deleted grading profile "${activeProfile.name}"`,
-        schoolId || 'default'
+        activeProfile.schoolId || schoolId || ''
       );
       setStatusMsg({ type: 'success', text: `Profile "${activeProfile.name}" removed.` });
       await loadProfiles();

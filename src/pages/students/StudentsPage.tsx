@@ -21,7 +21,7 @@ import { logAudit } from '../../utils/formatters';
 import { StudentProfileDocumentModal } from '../../components/students/StudentProfileDocumentModal';
 
 export const StudentsPage: React.FC = () => {
-  const { role, currentUser } = useAuth();
+  const { role, currentUser, isSuperAdmin } = useAuth();
   const { schoolId } = useSchool();
   const [students, setStudents] = useState<Student[]>([]);
   const [classes, setClasses] = useState<SchoolClass[]>([]);
@@ -43,15 +43,28 @@ export const StudentsPage: React.FC = () => {
   const [archiveLoading, setArchiveLoading] = useState(false);
 
   const matchesTenant = (itemSchoolId?: string) => {
-    return itemSchoolId ? itemSchoolId === schoolId : (schoolId === 'default' || !schoolId);
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) return isSuperAdmin;
+    return (itemSchoolId || '').trim().toLowerCase() === cleanSchool;
   };
 
   const fetchAllData = async () => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool && !isSuperAdmin) {
+      setClasses([]);
+      setParents([]);
+      setStudents([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
       // 1. Classes
       try {
-        const cSnap = await getDocs(collection(db, 'classes'));
+        const cSnap = await getDocs(
+          cleanSchool ? query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)) : collection(db, 'classes')
+        );
         const cList: SchoolClass[] = [];
         cSnap.forEach((d) => {
           const item = d.data() as SchoolClass;
@@ -64,7 +77,9 @@ export const StudentsPage: React.FC = () => {
 
       // 2. Parents
       try {
-        const pSnap = await getDocs(collection(db, 'parents'));
+        const pSnap = await getDocs(
+          cleanSchool ? query(collection(db, 'parents'), where('schoolId', '==', cleanSchool)) : collection(db, 'parents')
+        );
         const pList: Parent[] = [];
         pSnap.forEach((d) => {
           const item = d.data() as Parent;
@@ -77,7 +92,9 @@ export const StudentsPage: React.FC = () => {
 
       // 3. Students
       try {
-        const sSnap = await getDocs(collection(db, 'students'));
+        const sSnap = await getDocs(
+          cleanSchool ? query(collection(db, 'students'), where('schoolId', '==', cleanSchool)) : collection(db, 'students')
+        );
         const sList: Student[] = [];
         sSnap.forEach((d) => {
           const item = d.data() as Student;
@@ -112,7 +129,7 @@ export const StudentsPage: React.FC = () => {
         'students',
         studentToArchive.studentId,
         `Archived student ${studentToArchive.firstName} ${studentToArchive.lastName}`,
-        studentToArchive.schoolId || schoolId || 'default'
+        studentToArchive.schoolId || schoolId || ''
       );
       setStudentToArchive(null);
       await fetchAllData();
@@ -135,7 +152,7 @@ export const StudentsPage: React.FC = () => {
         'students',
         student.studentId,
         `Permanently deleted student ${student.firstName} ${student.lastName}`,
-        student.schoolId || schoolId || 'default'
+        student.schoolId || schoolId || ''
       );
       await fetchAllData();
     } catch (err) {

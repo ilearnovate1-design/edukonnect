@@ -49,17 +49,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const fetchDashboardData = async () => {
       setLoading(true);
       try {
+        const cleanSchool = (schoolId || '').trim().toLowerCase();
+        if (!cleanSchool) {
+          setTotalStudents(0);
+          setLoading(false);
+          return;
+        }
+
         const today = getTodayDateString();
         const studentsMap = new Map<string, Student>();
 
         // 1. Fetch Students strictly for current tenant school
         try {
-          const studentsSnap = await getDocs(query(collection(db, 'students'), where('status', '==', 'ACTIVE')));
+          const studentsSnap = await getDocs(
+            query(collection(db, 'students'), where('schoolId', '==', cleanSchool), where('status', '==', 'ACTIVE'))
+          );
           studentsSnap.forEach((doc) => {
             const s = doc.data() as Student;
-            if (matchesTenant(s.schoolId)) {
-              studentsMap.set(s.studentId, s);
-            }
+            studentsMap.set(s.studentId, s);
           });
           setTotalStudents(studentsMap.size);
         } catch (sErr) {
@@ -68,7 +75,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         // 2. Fetch Today's Attendance for current tenant school
         try {
-          const attSnap = await getDocs(query(collection(db, 'attendance'), where('date', '==', today)));
+          const attSnap = await getDocs(
+            query(collection(db, 'attendance'), where('schoolId', '==', cleanSchool), where('date', '==', today))
+          );
           let present = 0;
           let absent = 0;
           let late = 0;
@@ -76,8 +85,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           attSnap.forEach((doc) => {
             const a = doc.data() as AttendanceRecord;
-            if (!matchesTenant(a.schoolId)) return;
-
             if (a.status === 'PRESENT') present++;
             else if (a.status === 'ABSENT') absent++;
             else if (a.status === 'LATE') late++;
@@ -99,12 +106,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         // 3. Calculate Fees Outstanding for current tenant school
         try {
-          const feeStructSnap = await getDocs(collection(db, 'feeStructures'));
-          
+          const feeStructSnap = await getDocs(
+            query(collection(db, 'feeStructures'), where('schoolId', '==', cleanSchool))
+          );
+
           let expectedTotal = 0;
           feeStructSnap.forEach((fDoc) => {
             const fee = fDoc.data() as FeeStructure;
-            if (!matchesTenant(fee.schoolId)) return;
             if (fee.academicSession && fee.academicSession !== settings.currentAcademicSession) return;
             if (!areTermsMatching(fee.term, settings.currentTerm)) return;
 
@@ -117,6 +125,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           const paySnap = await getDocs(query(
             collection(db, 'payments'),
+            where('schoolId', '==', cleanSchool),
             where('academicSession', '==', settings.currentAcademicSession),
             where('term', '==', settings.currentTerm)
           ));
@@ -125,8 +134,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           const payList: { payment: Payment; studentName: string }[] = [];
           paySnap.forEach((pDoc) => {
             const p = pDoc.data() as Payment;
-            if (!matchesTenant(p.schoolId)) return;
-
             paidTotal += p.amount || 0;
             const s = studentsMap.get(p.studentId);
             payList.push({
@@ -148,14 +155,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         try {
           const assignSnap = await getDocs(query(
             collection(db, 'assignments'),
+            where('schoolId', '==', cleanSchool),
             where('status', '==', 'PUBLISHED'),
             limit(20)
           ));
           const aList: Assignment[] = [];
           assignSnap.forEach((doc) => {
-            const a = doc.data() as Assignment;
-            if (matchesTenant(a.schoolId) && aList.length < 5) {
-              aList.push(a);
+            if (aList.length < 5) {
+              aList.push(doc.data() as Assignment);
             }
           });
           setUpcomingAssignments(aList);
@@ -165,12 +172,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         // 5. Announcements for current tenant school
         try {
-          const annSnap = await getDocs(query(collection(db, 'announcements'), limit(20)));
+          const annSnap = await getDocs(query(
+            collection(db, 'announcements'),
+            where('schoolId', '==', cleanSchool),
+            limit(20)
+          ));
           const annList: Announcement[] = [];
           annSnap.forEach((doc) => {
-            const ann = doc.data() as Announcement;
-            if (matchesTenant(ann.schoolId) && annList.length < 4) {
-              annList.push(ann);
+            if (annList.length < 4) {
+              annList.push(doc.data() as Announcement);
             }
           });
           setRecentAnnouncements(annList);

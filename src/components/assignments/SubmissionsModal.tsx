@@ -36,10 +36,17 @@ export const SubmissionsModal: React.FC<SubmissionsModalProps> = ({
     const fetchSubmissions = async () => {
       setLoading(true);
       try {
-        const q = query(
-          collection(db, 'submissions'),
-          where('assignmentId', '==', assignment.assignmentId)
-        );
+        const targetSchoolId = (assignment.schoolId || '').trim().toLowerCase();
+        const q = targetSchoolId
+          ? query(
+              collection(db, 'submissions'),
+              where('schoolId', '==', targetSchoolId),
+              where('assignmentId', '==', assignment.assignmentId)
+            )
+          : query(
+              collection(db, 'submissions'),
+              where('assignmentId', '==', assignment.assignmentId)
+            );
         const snap = await getDocs(q);
         const sMap = new Map<string, Submission>();
         snap.forEach((d) => {
@@ -65,7 +72,10 @@ export const SubmissionsModal: React.FC<SubmissionsModalProps> = ({
       const submissionId = existingSub?.submissionId || `sub_${assignment.assignmentId}_${studentId}`;
       const docRef = doc(db, 'submissions', submissionId);
       
-      const targetSchoolId = assignment.schoolId || 'default';
+      const targetSchoolId = (assignment.schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId) {
+        throw new Error('Cannot grade submission: Assignment is missing a verified schoolId.');
+      }
       const payload: Partial<Submission> = {
         submissionId,
         schoolId: targetSchoolId,
@@ -101,7 +111,11 @@ export const SubmissionsModal: React.FC<SubmissionsModalProps> = ({
       if (studentObj && studentObj.parentIds?.length) {
         try {
           const parentDocsSnap = await getDocs(
-            query(collection(db, 'parents'), where('parentId', 'in', studentObj.parentIds.slice(0, 10)))
+            query(
+              collection(db, 'parents'),
+              where('schoolId', '==', targetSchoolId),
+              where('parentId', 'in', studentObj.parentIds.slice(0, 10))
+            )
           );
           const parentUids: string[] = [];
           parentDocsSnap.forEach(pd => {

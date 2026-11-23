@@ -7,9 +7,10 @@ export const sendNotification = async (
   title: string,
   message: string,
   type: string,
-  schoolId: string = 'default'
+  schoolId: string
 ) => {
-  if (userIds.length === 0) return;
+  const cleanSchool = (schoolId || '').trim().toLowerCase();
+  if (userIds.length === 0 || !cleanSchool) return;
 
   const batch = writeBatch(db);
   userIds.forEach(uid => {
@@ -17,7 +18,7 @@ export const sendNotification = async (
     const ref = doc(db, 'notifications', notifId);
     batch.set(ref, {
       notificationId: notifId,
-      schoolId: schoolId || 'default',
+      schoolId: cleanSchool,
       userId: uid,
       title,
       message,
@@ -39,43 +40,42 @@ export const broadcastAnnouncementNotifications = async (
   title: string,
   message: string,
   classId?: string,
-  schoolId: string = 'default'
+  schoolId?: string
 ) => {
+  const cleanSchool = (schoolId || '').trim().toLowerCase();
+  if (!cleanSchool) return;
+
   try {
     const targetUserIds = new Set<string>();
 
     if (audience === 'ALL' || audience === 'TEACHERS') {
       const teachersSnap = await getDocs(query(
-        collection(db, 'teachers'), 
+        collection(db, 'teachers'),
+        where('schoolId', '==', cleanSchool),
         where('status', '==', 'ACTIVE')
       ));
       teachersSnap.forEach(d => {
-        const data = d.data();
-        if (!data.schoolId || data.schoolId === schoolId) {
-          const uid = data.userId;
-          if (uid) targetUserIds.add(uid);
-        }
+        const uid = d.data().userId;
+        if (uid) targetUserIds.add(uid);
       });
     }
 
     if (audience === 'ALL' || audience === 'PARENTS') {
       const parentsSnap = await getDocs(query(
-        collection(db, 'parents'), 
+        collection(db, 'parents'),
+        where('schoolId', '==', cleanSchool),
         where('status', '==', 'ACTIVE')
       ));
       parentsSnap.forEach(d => {
-        const data = d.data();
-        if (!data.schoolId || data.schoolId === schoolId) {
-          const uid = data.userId;
-          if (uid) targetUserIds.add(uid);
-        }
+        const uid = d.data().userId;
+        if (uid) targetUserIds.add(uid);
       });
     }
 
     if (audience === 'CLASS_SPECIFIC' && classId) {
-      // Find students in this class
       const studentsSnap = await getDocs(query(
-        collection(db, 'students'), 
+        collection(db, 'students'),
+        where('schoolId', '==', cleanSchool),
         where('classId', '==', classId)
       ));
       const parentIdsToNotify = new Set<string>();
@@ -84,9 +84,11 @@ export const broadcastAnnouncementNotifications = async (
         pIds.forEach((pid: string) => parentIdsToNotify.add(pid));
       });
 
-      // Find parents linked to these parentIds
       if (parentIdsToNotify.size > 0) {
-        const parentsSnap = await getDocs(collection(db, 'parents'));
+        const parentsSnap = await getDocs(query(
+          collection(db, 'parents'),
+          where('schoolId', '==', cleanSchool)
+        ));
         parentsSnap.forEach(d => {
           const parentData = d.data();
           if (parentIdsToNotify.has(parentData.parentId) && parentData.userId) {
@@ -97,12 +99,11 @@ export const broadcastAnnouncementNotifications = async (
     }
 
     if (targetUserIds.size > 0) {
-      // Chunking for batch writes (max 500 per batch)
       const usersArray = Array.from(targetUserIds);
       const chunkSize = 400;
       for (let i = 0; i < usersArray.length; i += chunkSize) {
         const chunk = usersArray.slice(i, i + chunkSize);
-        await sendNotification(chunk, 'New Announcement', title, 'ANNOUNCEMENT', schoolId);
+        await sendNotification(chunk, title || 'New Notification', message, 'ANNOUNCEMENT', cleanSchool);
       }
     }
   } catch (err) {

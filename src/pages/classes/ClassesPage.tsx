@@ -15,7 +15,7 @@ import { logAudit } from '../../utils/formatters';
 import { SubjectsManagement } from '../../components/subjects/SubjectsManagement';
 
 export const ClassesPage: React.FC = () => {
-  const { role, currentUser, currentTeacher } = useAuth();
+  const { role, currentUser, currentTeacher, isSuperAdmin } = useAuth();
   const { settings, schoolId } = useSchool();
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
@@ -39,52 +39,51 @@ export const ClassesPage: React.FC = () => {
   };
 
   const fetchData = async () => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) {
+      setClasses([]);
+      setTeachers([]);
+      setStudents([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
       let classesList: SchoolClass[] = [];
 
       if (role === 'TEACHER' && currentTeacher) {
         if (currentTeacher.assignedClassIds && currentTeacher.assignedClassIds.length > 0) {
-          // If teacher has assigned classes, query them specifically
           const cSnap = await getDocs(
-            query(collection(db, 'classes'), where('classId', 'in', currentTeacher.assignedClassIds))
+            query(
+              collection(db, 'classes'),
+              where('schoolId', '==', cleanSchool),
+              where('classId', 'in', currentTeacher.assignedClassIds)
+            )
           );
           cSnap.forEach((d) => {
-            const item = d.data() as SchoolClass;
-            if (matchesTenant(item.schoolId)) {
-              classesList.push(item);
-            }
+            classesList.push(d.data() as SchoolClass);
           });
         }
       } else {
-        // Admin or other roles get all classes
-        const cSnap = await getDocs(collection(db, 'classes'));
+        const cSnap = await getDocs(query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)));
         cSnap.forEach((d) => {
-          const item = d.data() as SchoolClass;
-          if (matchesTenant(item.schoolId)) {
-            classesList.push(item);
-          }
+          classesList.push(d.data() as SchoolClass);
         });
       }
       setClasses(classesList);
 
-      const tSnap = await getDocs(collection(db, 'teachers'));
+      const tSnap = await getDocs(query(collection(db, 'teachers'), where('schoolId', '==', cleanSchool)));
       const tList: Teacher[] = [];
       tSnap.forEach((d) => {
-        const item = d.data() as Teacher;
-        if (matchesTenant(item.schoolId)) {
-          tList.push(item);
-        }
+        tList.push(d.data() as Teacher);
       });
       setTeachers(tList);
 
-      const sSnap = await getDocs(collection(db, 'students'));
+      const sSnap = await getDocs(query(collection(db, 'students'), where('schoolId', '==', cleanSchool)));
       const sList: Student[] = [];
       sSnap.forEach((d) => {
-        const item = d.data() as Student;
-        if (matchesTenant(item.schoolId)) {
-          sList.push(item);
-        }
+        sList.push(d.data() as Student);
       });
       setStudents(sList);
     } catch (err) {
@@ -96,7 +95,7 @@ export const ClassesPage: React.FC = () => {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [schoolId, role, currentTeacher]);
 
   const openAddModal = () => {
     setEditingClass(null);
@@ -132,7 +131,10 @@ export const ClassesPage: React.FC = () => {
     try {
       const cId = editingClass?.classId || `class-${name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
       const classDocRef = doc(db, 'classes', cId);
-      const targetSchoolId = editingClass?.schoolId || schoolId || 'default';
+      const targetSchoolId = (editingClass?.schoolId || schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId || (targetSchoolId === 'default' && !isSuperAdmin && !editingClass?.schoolId)) {
+        throw new Error('Cannot save class: No verified school context available.');
+      }
 
       const payload: any = {
         classId: cId,

@@ -106,17 +106,28 @@ export const FeesPage: React.FC = () => {
   const [copiedSmsStudentId, setCopiedSmsStudentId] = useState<string | null>(null);
 
   const matchesTenant = (itemSchoolId?: string) => {
-    if (!itemSchoolId) return true;
-    if (isSuperAdmin) return true;
-    if (itemSchoolId === schoolId) return true;
-    if (schoolId === 'default' || !schoolId) return itemSchoolId === 'default';
-    return false;
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) return isSuperAdmin;
+    return (itemSchoolId || '').trim().toLowerCase() === cleanSchool;
   };
 
   const fetchData = async () => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool && !isSuperAdmin) {
+      setClasses([]);
+      setStudents([]);
+      setParents([]);
+      setPayments([]);
+      setStructures([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
-      const cSnap = await getDocs(collection(db, 'classes'));
+      const cSnap = await getDocs(
+        cleanSchool ? query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)) : collection(db, 'classes')
+      );
       const cList: SchoolClass[] = [];
       cSnap.forEach((d) => {
         const item = d.data() as SchoolClass;
@@ -125,7 +136,9 @@ export const FeesPage: React.FC = () => {
       setClasses(cList);
       if (cList.length > 0 && !structClassId) setStructClassId(cList[0].classId);
 
-      const sSnap = await getDocs(collection(db, 'students'));
+      const sSnap = await getDocs(
+        cleanSchool ? query(collection(db, 'students'), where('schoolId', '==', cleanSchool)) : collection(db, 'students')
+      );
       const sList: Student[] = [];
       sSnap.forEach((d) => {
         const item = d.data() as Student;
@@ -134,7 +147,9 @@ export const FeesPage: React.FC = () => {
       setStudents(sList);
       if (sList.length > 0 && !payStudentId) setPayStudentId(sList[0].studentId);
 
-      const pSnap = await getDocs(collection(db, 'parents'));
+      const pSnap = await getDocs(
+        cleanSchool ? query(collection(db, 'parents'), where('schoolId', '==', cleanSchool)) : collection(db, 'parents')
+      );
       const pList: Parent[] = [];
       pSnap.forEach((d) => {
         const item = d.data() as Parent;
@@ -142,7 +157,11 @@ export const FeesPage: React.FC = () => {
       });
       setParents(pList);
 
-      const paySnap = await getDocs(query(collection(db, 'payments'), orderBy('createdAt', 'desc'), limit(150)));
+      const paySnap = await getDocs(
+        cleanSchool
+          ? query(collection(db, 'payments'), where('schoolId', '==', cleanSchool), limit(150))
+          : query(collection(db, 'payments'), orderBy('createdAt', 'desc'), limit(150))
+      );
       const payList: Payment[] = [];
       paySnap.forEach((d) => {
         const item = d.data() as Payment;
@@ -151,7 +170,9 @@ export const FeesPage: React.FC = () => {
       payList.sort((a, b) => (b.paymentDate > a.paymentDate ? 1 : -1));
       setPayments(payList);
 
-      const structSnap = await getDocs(collection(db, 'feeStructures'));
+      const structSnap = await getDocs(
+        cleanSchool ? query(collection(db, 'feeStructures'), where('schoolId', '==', cleanSchool)) : collection(db, 'feeStructures')
+      );
       const stList: FeeStructure[] = [];
       structSnap.forEach((d) => {
         const data = d.data();
@@ -172,8 +193,17 @@ export const FeesPage: React.FC = () => {
   useEffect(() => {
     fetchData();
 
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool && !isSuperAdmin) {
+      return;
+    }
+
+    const structQuery = cleanSchool
+      ? query(collection(db, 'feeStructures'), where('schoolId', '==', cleanSchool))
+      : collection(db, 'feeStructures');
+
     // Real-time listener for feeStructures guarantees instant updates on add/edit/delete
-    const unsub = onSnapshot(collection(db, 'feeStructures'), (snapshot) => {
+    const unsub = onSnapshot(structQuery, (snapshot) => {
       const stList: FeeStructure[] = [];
       snapshot.forEach((d) => {
         const data = d.data();
@@ -299,7 +329,10 @@ export const FeesPage: React.FC = () => {
 
     setIsSavingStructure(true);
     try {
-      const targetSchoolId = editingStructure?.schoolId || schoolId || 'default';
+      const targetSchoolId = (editingStructure?.schoolId || schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId || (targetSchoolId === 'default' && !isSuperAdmin && !editingStructure?.schoolId)) {
+        throw new Error('Cannot save fee structure: No verified school context available.');
+      }
       const structId = editingStructure
         ? editingStructure.feeStructureId
         : `fee-${structClassId}-${structName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}`;
@@ -377,7 +410,10 @@ export const FeesPage: React.FC = () => {
 
     setIsSavingQuickAssign(true);
     try {
-      const targetSchoolId = quickAssignStructure.schoolId || schoolId || 'default';
+      const targetSchoolId = (quickAssignStructure.schoolId || schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId) {
+        throw new Error('Cannot update assignments: No verified school context available.');
+      }
       const docRef = doc(db, 'feeStructures', quickAssignStructure.feeStructureId);
 
       const updates: any = {
@@ -426,7 +462,10 @@ export const FeesPage: React.FC = () => {
 
     setIsDeletingStructure(true);
     try {
-      const targetSchoolId = deletingStructure.schoolId || schoolId || 'default';
+      const targetSchoolId = (deletingStructure.schoolId || schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId) {
+        throw new Error('Cannot delete fee structure: No verified school context available.');
+      }
       const structId = deletingStructure.feeStructureId;
       await deleteDoc(doc(db, 'feeStructures', structId));
 
@@ -503,7 +542,10 @@ export const FeesPage: React.FC = () => {
 
       const receiptNumber = generateReceiptNumber();
       const paymentId = `pay-${Date.now()}`;
-      const targetSchoolId = selectedStudent.schoolId || schoolId || 'default';
+      const targetSchoolId = (selectedStudent.schoolId || schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId || (targetSchoolId === 'default' && !isSuperAdmin && !selectedStudent.schoolId)) {
+        throw new Error('Cannot record payment: No verified school context available.');
+      }
 
       const payload: any = {
         paymentId,

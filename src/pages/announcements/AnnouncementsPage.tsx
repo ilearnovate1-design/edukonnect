@@ -35,21 +35,27 @@ export const AnnouncementsPage: React.FC = () => {
   };
 
   const fetchData = async () => {
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) {
+      setClasses([]);
+      setAnnouncements([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
-      const cSnap = await getDocs(collection(db, 'classes'));
+      const cSnap = await getDocs(query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)));
       const cList: SchoolClass[] = [];
       cSnap.forEach((d) => {
-        const item = d.data() as SchoolClass;
-        if (matchesTenant(item.schoolId)) cList.push(item);
+        cList.push(d.data() as SchoolClass);
       });
       setClasses(cList);
 
-      const aSnap = await getDocs(query(collection(db, 'announcements'), orderBy('createdAt', 'desc'), limit(50)));
+      const aSnap = await getDocs(query(collection(db, 'announcements'), where('schoolId', '==', cleanSchool), limit(50)));
       const aList: Announcement[] = [];
       aSnap.forEach((d) => {
-        const item = d.data() as Announcement;
-        if (matchesTenant(item.schoolId)) aList.push(item);
+        aList.push(d.data() as Announcement);
       });
       aList.sort((a, b) => {
         const timeA = a.createdAt?.seconds ? a.createdAt.seconds : 0;
@@ -75,14 +81,19 @@ export const AnnouncementsPage: React.FC = () => {
       return;
     }
 
+    const cleanSchool = (schoolId || '').trim().toLowerCase();
+    if (!cleanSchool) {
+      setFormError('Verified school membership is required to publish announcements.');
+      return;
+    }
+
     setSaving(true);
     setFormError('');
     try {
       const aId = `ann-${Date.now()}`;
-      const targetSchoolId = schoolId || 'default';
       const payload: any = {
         announcementId: aId,
-        schoolId: targetSchoolId,
+        schoolId: cleanSchool,
         title: title.trim(),
         message: message.trim(),
         audience,
@@ -105,7 +116,7 @@ export const AnnouncementsPage: React.FC = () => {
         'announcements',
         aId,
         `Posted bulletin "${title}" to audience ${audience}`,
-        targetSchoolId
+        cleanSchool
       );
       
       // Dispatch in-app notifications to targeted users
@@ -114,7 +125,7 @@ export const AnnouncementsPage: React.FC = () => {
         title,
         message,
         audience === 'CLASS_SPECIFIC' ? classId : undefined,
-        targetSchoolId
+        cleanSchool
       );
 
       setShowModal(false);

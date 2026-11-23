@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, query, orderBy, limit } from 'firebase/firestore';
+import { collection, getDocs, query, where, limit } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
@@ -34,7 +34,7 @@ export const AuditLogsPage: React.FC = () => {
     setDiagnosticLoading(true);
     setRepairResult(null);
     try {
-      const report = await auditTeacherAndParentAccounts();
+      const report = await auditTeacherAndParentAccounts(isSuperAdmin ? undefined : schoolId);
       setDiagnosticReport(report);
     } catch (err) {
       console.error('Error running account diagnostics:', err);
@@ -50,7 +50,7 @@ export const AuditLogsPage: React.FC = () => {
       const result = await executeApprovedAccountRepair(diagnosticReport);
       setRepairResult(result);
       // Re-run diagnostic to refresh status
-      const updatedReport = await auditTeacherAndParentAccounts();
+      const updatedReport = await auditTeacherAndParentAccounts(isSuperAdmin ? undefined : schoolId);
       setDiagnosticReport(updatedReport);
     } catch (err) {
       console.error('Error executing controlled repair:', err);
@@ -62,13 +62,21 @@ export const AuditLogsPage: React.FC = () => {
   const fetchLogs = async () => {
     setLoading(true);
     try {
+      const cleanSchool = (schoolId || '').trim().toLowerCase();
+      if (!isSuperAdmin && !cleanSchool) {
+        setLogs([]);
+        return;
+      }
+
       const snap = await getDocs(
-        query(collection(db, 'auditLogs'), limit(150))
+        isSuperAdmin
+          ? query(collection(db, 'auditLogs'), limit(150))
+          : query(collection(db, 'auditLogs'), where('schoolId', '==', cleanSchool), limit(150))
       );
       const list: AuditLog[] = [];
       snap.forEach((d) => {
         const data = d.data();
-        if (!data.schoolId || data.schoolId === schoolId || isSuperAdmin) {
+        if (isSuperAdmin || data.schoolId === cleanSchool) {
           list.push({ ...data, auditId: d.id } as AuditLog);
         }
       });

@@ -54,11 +54,19 @@ export const SubmitWorkModal: React.FC<SubmitWorkModalProps> = ({
       setFormError('');
       setSuccessNotice(null);
       try {
-        const q = query(
-          collection(db, 'submissions'),
-          where('assignmentId', '==', assignment.assignmentId),
-          where('studentId', '==', student.studentId)
-        );
+        const targetSchoolId = (assignment.schoolId || student.schoolId || '').trim().toLowerCase();
+        const q = targetSchoolId
+          ? query(
+              collection(db, 'submissions'),
+              where('schoolId', '==', targetSchoolId),
+              where('assignmentId', '==', assignment.assignmentId),
+              where('studentId', '==', student.studentId)
+            )
+          : query(
+              collection(db, 'submissions'),
+              where('assignmentId', '==', assignment.assignmentId),
+              where('studentId', '==', student.studentId)
+            );
         const snap = await getDocs(q);
         if (!snap.empty) {
           const sub = snap.docs[0].data() as Submission;
@@ -121,7 +129,10 @@ export const SubmitWorkModal: React.FC<SubmitWorkModalProps> = ({
       const submissionId = submission?.submissionId || `sub_${assignment.assignmentId}_${student.studentId}`;
       const docRef = doc(db, 'submissions', submissionId);
       const isUpdate = submission?.status === 'SUBMITTED';
-      const targetSchoolId = assignment.schoolId || student.schoolId || 'default';
+      const targetSchoolId = (assignment.schoolId || student.schoolId || '').trim().toLowerCase();
+      if (!targetSchoolId) {
+        throw new Error('Cannot submit homework: Verified schoolId is missing.');
+      }
       
       const payload: Partial<Submission> = {
         submissionId,

@@ -8,6 +8,7 @@ import { Student, Parent, SchoolClass, AttendanceRecord, Result, Payment, Assign
 import { formatNaira, formatDate, formatTime } from '../../utils/formatters';
 import { isFeeApplicableToStudent, areTermsMatching } from '../../utils/feeUtils';
 import { useSchool } from '../../contexts/SchoolContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { Printer, User, Phone, MapPin, Calendar, Heart, ShieldAlert, FileText, Download } from 'lucide-react';
 import { StudentProfileDocumentModal } from '../../components/students/StudentProfileDocumentModal';
 
@@ -24,7 +25,8 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({
   student,
   onEdit,
 }) => {
-  const { settings } = useSchool();
+  const { settings, schoolId } = useSchool();
+  const { role } = useAuth();
   const [activeTab, setActiveTab] = useState<'overview' | 'attendance' | 'results' | 'assignments' | 'fees'>('overview');
   const [showDocumentModal, setShowDocumentModal] = useState(false);
 
@@ -43,6 +45,12 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({
     const fetchDetails = async () => {
       setLoading(true);
       try {
+        const targetSchool = (student.schoolId || schoolId || '').trim().toLowerCase();
+        if (!targetSchool) {
+          setLoading(false);
+          return;
+        }
+
         // 1. Fetch Class
         if (student.classId) {
           const cDoc = await getDoc(doc(db, 'classes', student.classId));
@@ -58,7 +66,7 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({
 
         // 3. Attendance
         const attSnap = await getDocs(
-          query(collection(db, 'attendance'), where('studentId', '==', student.studentId))
+          query(collection(db, 'attendance'), where('schoolId', '==', targetSchool), where('studentId', '==', student.studentId))
         );
         const atts: AttendanceRecord[] = [];
         attSnap.forEach((d) => atts.push(d.data() as AttendanceRecord));
@@ -66,8 +74,15 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({
         setAttendanceList(atts);
 
         // 4. Results
+        const resConstraints: any[] = [
+          where('schoolId', '==', targetSchool),
+          where('studentId', '==', student.studentId),
+        ];
+        if (role === 'PARENT') {
+          resConstraints.push(where('status', '==', 'PUBLISHED'));
+        }
         const resSnap = await getDocs(
-          query(collection(db, 'results'), where('studentId', '==', student.studentId))
+          query(collection(db, 'results'), ...resConstraints)
         );
         const res: Result[] = [];
         resSnap.forEach((d) => res.push(d.data() as Result));
@@ -75,7 +90,7 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({
 
         // 5. Fees and Payments
         const paySnap = await getDocs(
-          query(collection(db, 'payments'), where('studentId', '==', student.studentId))
+          query(collection(db, 'payments'), where('schoolId', '==', targetSchool), where('studentId', '==', student.studentId))
         );
         const pays: Payment[] = [];
         paySnap.forEach((d) => pays.push(d.data() as Payment));
@@ -84,7 +99,7 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({
 
         if (student.classId) {
           const feeSnap = await getDocs(
-            query(collection(db, 'feeStructures'), where('classId', '==', student.classId))
+            query(collection(db, 'feeStructures'), where('schoolId', '==', targetSchool), where('classId', '==', student.classId))
           );
           let totalExpected = 0;
           feeSnap.forEach((d) => {
@@ -101,7 +116,7 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({
         // 6. Assignments
         if (student.classId) {
           const aSnap = await getDocs(
-            query(collection(db, 'assignments'), where('classId', '==', student.classId))
+            query(collection(db, 'assignments'), where('schoolId', '==', targetSchool), where('classId', '==', student.classId))
           );
           const assigns: Assignment[] = [];
           aSnap.forEach((d) => assigns.push(d.data() as Assignment));

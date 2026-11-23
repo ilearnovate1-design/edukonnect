@@ -33,17 +33,25 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigate }
     const fetchTeacherData = async () => {
       setLoading(true);
       try {
+        const cleanSchool = (schoolId || '').trim().toLowerCase();
+        if (!cleanSchool) {
+          setAssignedClasses([]);
+          setTodayAttendance([]);
+          setMyAssignments([]);
+          setAnnouncements([]);
+          setLoading(false);
+          return;
+        }
+
         const today = getTodayDateString();
 
         // 1. Fetch Assigned Classes strictly for current tenant
         let classIds = currentTeacher?.assignedClassIds || [];
-        const classesSnap = await getDocs(collection(db, 'classes'));
+        const classesSnap = await getDocs(query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)));
         const allClasses: SchoolClass[] = [];
         classesSnap.forEach((doc) => {
           const c = doc.data() as SchoolClass;
-          if (matchesTenant(c.schoolId)) {
-            allClasses.push(c);
-          }
+          allClasses.push(c);
         });
 
         let relevantClasses: SchoolClass[] = [];
@@ -52,35 +60,38 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigate }
         } else if (currentTeacher?.teacherId) {
           relevantClasses = allClasses.filter((c) => c.classTeacherId === currentTeacher.teacherId);
         } else {
-          // If no specific assignment, default to all classes in this teacher's school
           relevantClasses = allClasses;
         }
         setAssignedClasses(relevantClasses);
 
-        // 2. Fetch Students for the assigned class or all
+        // 2. Fetch Students for the assigned class
         const targetClassId = relevantClasses[0]?.classId;
         if (targetClassId) {
           const sSnap = await getDocs(
-            query(collection(db, 'students'), where('classId', '==', targetClassId), where('status', '==', 'ACTIVE'))
+            query(
+              collection(db, 'students'),
+              where('schoolId', '==', cleanSchool),
+              where('classId', '==', targetClassId),
+              where('status', '==', 'ACTIVE')
+            )
           );
           const students: Student[] = [];
           sSnap.forEach((d) => {
-            const s = d.data() as Student;
-            if (matchesTenant(s.schoolId)) {
-              students.push(s);
-            }
+            students.push(d.data() as Student);
           });
 
-          // Fetch attendance for these students today
           const attSnap = await getDocs(
-            query(collection(db, 'attendance'), where('classId', '==', targetClassId), where('date', '==', today))
+            query(
+              collection(db, 'attendance'),
+              where('schoolId', '==', cleanSchool),
+              where('classId', '==', targetClassId),
+              where('date', '==', today)
+            )
           );
           const attMap = new Map<string, AttendanceRecord>();
           attSnap.forEach((d) => {
             const a = d.data() as AttendanceRecord;
-            if (matchesTenant(a.schoolId)) {
-              attMap.set(a.studentId, a);
-            }
+            attMap.set(a.studentId, a);
           });
 
           setTodayAttendance(
@@ -95,26 +106,29 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigate }
 
         // 3. Assignments for current tenant
         const aSnap = await getDocs(
-          query(collection(db, 'assignments'), limit(20))
+          query(collection(db, 'assignments'), where('schoolId', '==', cleanSchool), limit(20))
         );
         const aList: Assignment[] = [];
         aSnap.forEach((d) => {
-          const a = d.data() as Assignment;
-          if (matchesTenant(a.schoolId) && aList.length < 5) {
-            aList.push(a);
+          if (aList.length < 5) {
+            aList.push(d.data() as Assignment);
           }
         });
         setMyAssignments(aList);
 
         // 4. Announcements for teachers or all
         const annSnap = await getDocs(
-          query(collection(db, 'announcements'), where('audience', 'in', ['ALL', 'TEACHERS']), limit(20))
+          query(
+            collection(db, 'announcements'),
+            where('schoolId', '==', cleanSchool),
+            where('audience', 'in', ['ALL', 'TEACHERS']),
+            limit(20)
+          )
         );
         const annList: Announcement[] = [];
         annSnap.forEach((d) => {
-          const ann = d.data() as Announcement;
-          if (matchesTenant(ann.schoolId) && annList.length < 4) {
-            annList.push(ann);
+          if (annList.length < 4) {
+            annList.push(d.data() as Announcement);
           }
         });
         setAnnouncements(annList);

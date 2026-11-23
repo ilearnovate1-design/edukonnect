@@ -175,11 +175,16 @@ export const logAudit = async (
   entityType: string,
   entityId: string,
   description: string,
-  schoolId: string = 'default'
+  schoolId: string = ''
 ) => {
+  const cleanSchool = (schoolId || '').trim().toLowerCase();
+  if (!cleanSchool) {
+    console.warn('Skipped audit log write: missing verified schoolId for', action);
+    return;
+  }
   try {
     await addDoc(collection(db, 'auditLogs'), {
-      schoolId: schoolId || 'default',
+      schoolId: cleanSchool,
       userId,
       action,
       entityType,

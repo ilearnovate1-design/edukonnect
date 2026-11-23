@@ -65,6 +65,372 @@
         },
         "updatedAt": { "type": "string", "format": "date-time" }
       }
+    },
+    "School": {
+      "title": "School",
+      "description": "School tenant configuration and settings.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "slug": { "type": "string" },
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "currentAcademicSession": { "type": "string" },
+        "currentTerm": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["schoolId", "schoolName"]
+    },
+    "SchoolDomain": {
+      "title": "School Domain",
+      "description": "Hostname to schoolId mapping.",
+      "type": "object",
+      "properties": {
+        "domain": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["domain", "schoolId"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Authenticated user account and active school context.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "TEACHER", "PARENT", "SUPER_ADMIN"] },
+        "schoolId": { "type": "string" },
+        "isSuperAdmin": { "type": "boolean" },
+        "teacherId": { "type": "string" },
+        "parentId": { "type": "string" },
+        "assignedClassIds": { "type": "array" },
+        "approvalStatus": { "type": "string", "enum": ["PENDING_SETUP", "PENDING_APPROVAL", "APPROVED", "REJECTED"] },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "active"]
+    },
+    "SchoolMembership": {
+      "title": "School Membership",
+      "description": "Authoritative user-to-school membership and role binding.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string", "format": "email" },
+        "schoolId": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "TEACHER", "PARENT"] },
+        "status": { "type": "string", "enum": ["ACTIVE", "INVITED", "SUSPENDED", "REVOKED"] },
+        "teacherId": { "type": "string" },
+        "parentId": { "type": "string" },
+        "linkedStudentIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "schoolId", "role", "status"]
+    },
+    "AccountInvitation": {
+      "title": "Account Invitation",
+      "description": "Single-use invitation token binding a teacher or parent to a school.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["TEACHER", "PARENT"] },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "EXPIRED", "REVOKED"] },
+        "invitedBy": { "type": "string" },
+        "acceptedBy": { "type": "string" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "schoolId", "email", "role", "status"]
+    },
+    "Teacher": {
+      "title": "Teacher",
+      "description": "School teaching staff profile and class/subject assignments.",
+      "type": "object",
+      "properties": {
+        "teacherId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "userId": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "assignedClassIds": { "type": "array" },
+        "subjects": { "type": "array" },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teacherId", "schoolId", "firstName", "lastName", "email", "status"]
+    },
+    "Parent": {
+      "title": "Parent",
+      "description": "School parent/guardian profile.",
+      "type": "object",
+      "properties": {
+        "parentId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "userId": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["parentId", "schoolId", "firstName", "lastName", "email"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Enrolled student record linked to a school, class, and parents.",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "admissionNumber": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "classId": { "type": "string" },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE", "GRADUATED", "TRANSFERRED"] },
+        "parentIds": { "type": "array" },
+        "parentEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["studentId", "schoolId", "admissionNumber", "firstName", "lastName", "classId", "status"]
+    },
+    "SchoolClass": {
+      "title": "School Class",
+      "description": "Class arm belonging to a school.",
+      "type": "object",
+      "properties": {
+        "classId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "name": { "type": "string" },
+        "level": { "type": "string" },
+        "section": { "type": "string" },
+        "classTeacherId": { "type": "string" },
+        "academicSession": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["classId", "schoolId", "name", "academicSession"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Curriculum subject belonging to a school.",
+      "type": "object",
+      "properties": {
+        "subjectId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "category": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["subjectId", "schoolId", "name", "active"]
+    },
+    "AttendanceRecord": {
+      "title": "Attendance Record",
+      "description": "Daily pupil attendance record.",
+      "type": "object",
+      "properties": {
+        "attendanceId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "classId": { "type": "string" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["PRESENT", "ABSENT", "LATE"] },
+        "markedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["attendanceId", "schoolId", "studentId", "classId", "date", "status"]
+    },
+    "FeeStructure": {
+      "title": "Fee Structure",
+      "description": "School fee tariff definition.",
+      "type": "object",
+      "properties": {
+        "feeStructureId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "classId": { "type": "string" },
+        "academicSession": { "type": "string" },
+        "term": { "type": "string" },
+        "feeType": { "type": "string" },
+        "amount": { "type": "number" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["feeStructureId", "schoolId", "classId", "amount"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Recorded fee payment.",
+      "type": "object",
+      "properties": {
+        "paymentId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "amount": { "type": "number" },
+        "paymentDate": { "type": "string" },
+        "term": { "type": "string" },
+        "academicSession": { "type": "string" },
+        "recordedBy": { "type": "string" }
+      },
+      "required": ["paymentId", "schoolId", "studentId", "amount"]
+    },
+    "Result": {
+      "title": "Result",
+      "description": "Student subject assessment and terminal result record with workflow status.",
+      "type": "object",
+      "properties": {
+        "resultId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "classId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "academicSession": { "type": "string" },
+        "term": { "type": "string" },
+        "componentScores": { "type": "object" },
+        "caScore": { "type": "number" },
+        "examScore": { "type": "number" },
+        "totalScore": { "type": "number" },
+        "grade": { "type": "string" },
+        "remark": { "type": "string" },
+        "gradingProfileId": { "type": "string" },
+        "status": { "type": "string", "enum": ["DRAFT", "SUBMITTED", "APPROVED", "PUBLISHED"] },
+        "submittedBy": { "type": "string" },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "approvedBy": { "type": "string" },
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "publishedBy": { "type": "string" },
+        "publishedAt": { "type": "string", "format": "date-time" },
+        "auditHistory": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["resultId", "schoolId", "studentId", "classId", "subjectId", "academicSession", "term", "totalScore", "grade", "status"]
+    },
+    "GradingProfile": {
+      "title": "Grading Profile",
+      "description": "Configurable school grading profile.",
+      "type": "object",
+      "properties": {
+        "profileId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "name": { "type": "string" },
+        "levelCategory": { "type": "string" },
+        "calculationMethod": { "type": "string" },
+        "version": { "type": "integer" }
+      },
+      "required": ["profileId", "schoolId", "name"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Class homework assignment.",
+      "type": "object",
+      "properties": {
+        "assignmentId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "title": { "type": "string" },
+        "classId": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "CLOSED"] }
+      },
+      "required": ["assignmentId", "schoolId", "title", "classId", "teacherId"]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "Student assignment submission.",
+      "type": "object",
+      "properties": {
+        "submissionId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "assignmentId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "status": { "type": "string", "enum": ["NOT_SUBMITTED", "SUBMITTED", "GRADED"] }
+      },
+      "required": ["submissionId", "schoolId", "assignmentId", "studentId", "status"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "School bulletin announcement.",
+      "type": "object",
+      "properties": {
+        "announcementId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "audience": { "type": "string", "enum": ["ALL", "TEACHERS", "PARENTS", "CLASS_SPECIFIC"] }
+      },
+      "required": ["announcementId", "schoolId", "title", "message", "audience"]
+    },
+    "AppNotification": {
+      "title": "App Notification",
+      "description": "In-app user notification.",
+      "type": "object",
+      "properties": {
+        "notificationId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "read": { "type": "boolean" }
+      },
+      "required": ["notificationId", "schoolId", "userId", "title", "message", "read"]
+    },
+    "AuditLog": {
+      "title": "Audit Log",
+      "description": "Immutable security and operational audit trail entry.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string" },
+        "userId": { "type": "string" },
+        "action": { "type": "string" },
+        "entityType": { "type": "string" },
+        "entityId": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["schoolId", "userId", "action"]
+    },
+    "StudentEvaluation": {
+      "title": "Student Evaluation",
+      "description": "Terminal student remarks and affective/psychomotor evaluation.",
+      "type": "object",
+      "properties": {
+        "evaluationId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "classId": { "type": "string" },
+        "term": { "type": "string" },
+        "academicSession": { "type": "string" },
+        "teacherRemark": { "type": "string" },
+        "principalRemark": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "verdict": { "type": "string" },
+        "affectiveScores": { "type": "object" },
+        "updatedBy": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["evaluationId", "schoolId", "studentId", "term", "academicSession"]
     }
   },
   "firestore": {
@@ -79,6 +445,94 @@
     "/platformSettings/pricing": {
       "schema": "PlatformSettings",
       "description": "Platform pricing configuration."
+    },
+    "/schools/{schoolId}": {
+      "schema": "School",
+      "description": "School tenant profile and academic settings."
+    },
+    "/schoolSettings/{docId}": {
+      "schema": "School",
+      "description": "Legacy school settings documents."
+    },
+    "/schoolDomains/{domain}": {
+      "schema": "SchoolDomain",
+      "description": "Custom domain to school tenant mappings."
+    },
+    "/invitations/{invitationId}": {
+      "schema": "AccountInvitation",
+      "description": "Single-use school onboarding invitations."
+    },
+    "/memberships/{membershipId}": {
+      "schema": "SchoolMembership",
+      "description": "Authoritative user memberships scoped by {schoolId}_{userId}."
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User accounts and active school context."
+    },
+    "/students/{studentId}": {
+      "schema": "Student",
+      "description": "School-scoped student records."
+    },
+    "/parents/{parentId}": {
+      "schema": "Parent",
+      "description": "School-scoped parent/guardian profiles."
+    },
+    "/teachers/{teacherId}": {
+      "schema": "Teacher",
+      "description": "School-scoped teaching staff directory and assignments."
+    },
+    "/classes/{classId}": {
+      "schema": "SchoolClass",
+      "description": "School-scoped class arms and grade levels."
+    },
+    "/subjects/{subjectId}": {
+      "schema": "Subject",
+      "description": "School-scoped curriculum subjects."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": "AttendanceRecord",
+      "description": "Daily attendance records per student."
+    },
+    "/feeStructures/{feeStructureId}": {
+      "schema": "FeeStructure",
+      "description": "School fee structures."
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Student fee payment records."
+    },
+    "/results/{resultId}": {
+      "schema": "Result",
+      "description": "Student subject assessment scores and report approval workflow records."
+    },
+    "/gradingProfiles/{profileId}": {
+      "schema": "GradingProfile",
+      "description": "School-scoped configurable grading profiles."
+    },
+    "/assignments/{assignmentId}": {
+      "schema": "Assignment",
+      "description": "Class homework assignments."
+    },
+    "/submissions/{submissionId}": {
+      "schema": "Submission",
+      "description": "Student homework submissions."
+    },
+    "/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "School announcements and bulletins."
+    },
+    "/notifications/{notificationId}": {
+      "schema": "AppNotification",
+      "description": "In-app notifications per user."
+    },
+    "/auditLogs/{auditId}": {
+      "schema": "AuditLog",
+      "description": "Immutable school audit log entries."
+    },
+    "/evaluations/{evalId}": {
+      "schema": "StudentEvaluation",
+      "description": "Terminal student report card remarks and behavioral ratings."
     }
   }
 }
