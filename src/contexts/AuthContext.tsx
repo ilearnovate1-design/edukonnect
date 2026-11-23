@@ -142,15 +142,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (emailLower) {
           const tQuery = query(collection(db, 'teachers'), where('email', '==', emailLower));
           const tSnap = await getDocs(tQuery);
-          tSnap.forEach((d) => teacherDocs.push({ ...(d.data() as Teacher), teacherId: (d.data() as Teacher).teacherId || d.id }));
+          tSnap.forEach((d) => {
+            const td = d.data() as Teacher;
+            teacherDocs.push({ ...td, teacherId: d.id });
+          });
         }
 
         const tQuery2 = query(collection(db, 'teachers'), where('userId', '==', firebaseUser.uid));
         const tSnap2 = await getDocs(tQuery2);
         tSnap2.forEach((d) => {
-          const td = { ...(d.data() as Teacher), teacherId: (d.data() as Teacher).teacherId || d.id };
-          if (!teacherDocs.some((t) => t.teacherId === td.teacherId)) {
-            teacherDocs.push(td);
+          const td = d.data() as Teacher;
+          if (!teacherDocs.some((t) => t.teacherId === d.id)) {
+            teacherDocs.push({ ...td, teacherId: d.id });
           }
         });
       } catch (tErr) {
@@ -186,11 +189,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (idx >= 0) discoveredMemberships[idx] = inferred;
             }
             inferredMembershipsToPersist.push(inferred);
-          } else if (!existingDet.teacherId && t.teacherId && existingDet.status === 'ACTIVE') {
-            existingDet.teacherId = t.teacherId;
+          } else if (
+            existingDet.status === 'ACTIVE' &&
+            existingDet.role === 'TEACHER' &&
+            (existingDet.teacherId !== t.teacherId || existingDet.userId !== firebaseUser.uid)
+          ) {
             membershipsToBackfill.push({
               id: detId,
-              fields: { teacherId: t.teacherId, updatedAt: serverTimestamp() },
+              fields: {
+                userId: firebaseUser.uid,
+                teacherId: t.teacherId,
+                updatedAt: serverTimestamp(),
+              },
             });
           }
 
@@ -206,15 +216,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (emailLower) {
           const pQuery = query(collection(db, 'parents'), where('email', '==', emailLower));
           const pSnap = await getDocs(pQuery);
-          pSnap.forEach((d) => parentDocs.push({ ...(d.data() as Parent), parentId: (d.data() as Parent).parentId || d.id }));
+          pSnap.forEach((d) => {
+            const pd = d.data() as Parent;
+            parentDocs.push({ ...pd, parentId: d.id });
+          });
         }
 
         const pQuery2 = query(collection(db, 'parents'), where('userId', '==', firebaseUser.uid));
         const pSnap2 = await getDocs(pQuery2);
         pSnap2.forEach((d) => {
-          const pd = { ...(d.data() as Parent), parentId: (d.data() as Parent).parentId || d.id };
-          if (!parentDocs.some((p) => p.parentId === pd.parentId)) {
-            parentDocs.push(pd);
+          const pd = d.data() as Parent;
+          if (!parentDocs.some((p) => p.parentId === d.id)) {
+            parentDocs.push({ ...pd, parentId: d.id });
           }
         });
       } catch (pErr) {
@@ -246,11 +259,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (idx >= 0) discoveredMemberships[idx] = inferred;
             }
             inferredMembershipsToPersist.push(inferred);
-          } else if (!existingDet.parentId && p.parentId && existingDet.status === 'ACTIVE') {
-            existingDet.parentId = p.parentId;
+          } else if (
+            existingDet.status === 'ACTIVE' &&
+            existingDet.role === 'PARENT' &&
+            (existingDet.parentId !== p.parentId || existingDet.userId !== firebaseUser.uid)
+          ) {
             membershipsToBackfill.push({
               id: detId,
-              fields: { parentId: p.parentId, updatedAt: serverTimestamp() },
+              fields: {
+                userId: firebaseUser.uid,
+                parentId: p.parentId,
+                updatedAt: serverTimestamp(),
+              },
             });
           }
         }
@@ -298,6 +318,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       for (const bf of membershipsToBackfill) {
         try {
           await updateDoc(doc(db, 'memberships', bf.id), bf.fields);
+          const detTarget = deterministicMembershipMap.get(bf.id);
+          if (detTarget) {
+            if (bf.fields.teacherId) detTarget.teacherId = bf.fields.teacherId;
+            if (bf.fields.parentId) detTarget.parentId = bf.fields.parentId;
+            if (bf.fields.userId) detTarget.userId = bf.fields.userId;
+          }
+          const discTarget = discoveredMemberships.find((m) => m.id === bf.id);
+          if (discTarget) {
+            if (bf.fields.teacherId) discTarget.teacherId = bf.fields.teacherId;
+            if (bf.fields.parentId) discTarget.parentId = bf.fields.parentId;
+            if (bf.fields.userId) discTarget.userId = bf.fields.userId;
+          }
         } catch (bfErr) {
           console.warn(`Could not backfill membership ${bf.id}:`, bfErr);
         }
@@ -350,7 +382,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (directTeacherSnap && directTeacherSnap.exists && directTeacherSnap.exists()) {
               const td = directTeacherSnap.data() as Teacher;
               if (td.status !== 'INACTIVE') {
-                activeTeacher = { ...td, teacherId: td.teacherId || directTeacherSnap.id };
+                activeTeacher = { ...td, teacherId: directTeacherSnap.id };
               }
             }
           }

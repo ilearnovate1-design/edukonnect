@@ -187,7 +187,8 @@ service cloud.firestore {
       return strLower(cData.get('schoolId', '')) == strLower(schoolId) &&
         (
           (tData.get('assignedClassIds', []) is list && classId in tData.get('assignedClassIds', [])) ||
-          cData.get('classTeacherId', '') == tid
+          cData.get('classTeacherId', '') == tid ||
+          cData.get('classTeacherId', '') == request.auth.uid
         );
     }
 
@@ -329,6 +330,14 @@ service cloud.firestore {
         strLower(getUserData().get('schoolId', '')) == strLower(schoolId);
     }
 
+    function isMembershipOwnerForSelfHeal(mData) {
+      return mData.get('userId', '') == request.auth.uid || (
+        (mData.get('userId', '') == '' || mData.get('userId', '') == null) &&
+        userEmailLower() != '' &&
+        strLower(mData.get('userEmail', '')) == userEmailLower()
+      );
+    }
+
     // =========================================================================
     // Platform Level Access (Super Admin Only)
     // =========================================================================
@@ -452,23 +461,23 @@ service cloud.firestore {
           request.resource.data.get('userId', '') == resource.data.get('userId', '') &&
           request.resource.data.get('role', '') in ['ADMIN', 'TEACHER', 'PARENT']
         ) || (
-          // Self-healing link backfill ONLY: role, status, schoolId, and userId remain immutable
+          // Self-healing link backfill ONLY: role, status, and schoolId remain strictly immutable
           ('schoolId' in resource.data) &&
           isValidTenantSchoolId(resource.data.schoolId) &&
-          membershipId == resource.data.schoolId + '_' + request.auth.uid &&
-          resource.data.get('userId', '') == request.auth.uid &&
+          membershipId == strLower(resource.data.schoolId) + '_' + request.auth.uid &&
+          isMembershipOwnerForSelfHeal(resource.data) &&
           resource.data.get('status', '') == 'ACTIVE' &&
           request.resource.data.get('schoolId', '') == resource.data.schoolId &&
-          request.resource.data.get('userId', '') == resource.data.get('userId', '') &&
+          request.resource.data.get('userId', '') == request.auth.uid &&
           request.resource.data.get('role', '') == resource.data.get('role', '') &&
           request.resource.data.get('status', '') == resource.data.get('status', '') && (
             (
               resource.data.get('role', '') == 'TEACHER' &&
-              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['teacherId', 'updatedAt']) &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['userId', 'teacherId', 'updatedAt']) &&
               isAuthorizedLegacyTeacherMembership(resource.data.schoolId, request.auth.uid, 'TEACHER')
             ) || (
               resource.data.get('role', '') == 'PARENT' &&
-              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['parentId', 'updatedAt']) &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['userId', 'parentId', 'updatedAt']) &&
               isAuthorizedLegacyParentMembership(resource.data.schoolId, request.auth.uid, 'PARENT')
             )
           )
@@ -782,9 +791,11 @@ service cloud.firestore {
               request.resource.data.get('isLocked', false) == false &&
               request.resource.data.get('locked', false) == false &&
               (
-                resource.data.get('teacherId', '') == request.auth.uid ||
-                resource.data.get('teacherId', '') == resolveMembershipTeacherId(resource.data.schoolId) ||
-                resource.data.get('teacherId', '') == ''
+                !('teacherId' in resource.data) ||
+                resource.data.teacherId == null ||
+                resource.data.teacherId == '' ||
+                resource.data.teacherId == request.auth.uid ||
+                resource.data.teacherId == resolveMembershipTeacherId(resource.data.schoolId)
               ) &&
               request.resource.data.get('teacherId', '') == request.auth.uid &&
               !request.resource.data.diff(resource.data).affectedKeys().hasAny([

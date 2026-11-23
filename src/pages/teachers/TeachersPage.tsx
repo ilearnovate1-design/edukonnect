@@ -84,7 +84,7 @@ export const TeachersPage: React.FC = () => {
       tSnap.forEach((d) => {
         const item = d.data() as Teacher;
         if (matchesTenant(item.schoolId)) {
-          tList.push(item);
+          tList.push({ ...item, teacherId: item.teacherId || d.id });
         }
       });
       setTeachers(tList);
@@ -96,7 +96,7 @@ export const TeachersPage: React.FC = () => {
       cSnap.forEach((d) => {
         const item = d.data() as SchoolClass;
         if (matchesTenant(item.schoolId)) {
-          cList.push(item);
+          cList.push({ ...item, classId: item.classId || d.id });
         }
       });
       setClasses(cList);
@@ -108,7 +108,7 @@ export const TeachersPage: React.FC = () => {
       subSnap.forEach((d) => {
         const item = d.data() as Subject;
         if (matchesTenant(item.schoolId)) {
-          subList.push(item);
+          subList.push({ ...item, subjectId: item.subjectId || d.id });
         }
       });
       setSubjects(subList);

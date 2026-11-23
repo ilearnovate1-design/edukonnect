@@ -11,6 +11,7 @@
  */
 
 import {
+  buildScopedResultId,
   evaluateReportConditionsSync,
   formatReportWriteFailure,
   isResultRecordLocked,
@@ -65,7 +66,7 @@ interface ResultDoc {
   subjectId: string;
   academicSession: string;
   term: string;
-  teacherId?: string;
+  teacherId?: string | null;
   totalScore: number;
   grade: string;
   status: ReportStatus;
@@ -136,7 +137,8 @@ function isTeacherAuthorizedForReport(
   if (!cData || strLower(cData.schoolId) !== strLower(schoolId)) return false;
   const classAuthorized =
     (Array.isArray(tData.assignedClassIds) && tData.assignedClassIds.includes(classId)) ||
-    cData.classTeacherId === tid;
+    cData.classTeacherId === tid ||
+    cData.classTeacherId === auth.uid;
   if (!classAuthorized) return false;
 
   const sData = subjects.get(subjectId);
@@ -260,7 +262,8 @@ function canUpdateResult(
       return { allowed: false, reason: 'Teachers cannot lock or unlock reports' };
     }
     const tid = resolveMembershipTeacherId(auth, existing.schoolId);
-    if (existing.teacherId && existing.teacherId !== auth.uid && existing.teacherId !== tid) {
+    const hasExistingOwner = existing.teacherId !== undefined && existing.teacherId !== null && existing.teacherId !== '';
+    if (hasExistingOwner && existing.teacherId !== auth.uid && existing.teacherId !== tid) {
       return { allowed: false, reason: 'Cannot modify another teacher report' };
     }
     if (nextData.teacherId !== auth.uid) {
@@ -801,6 +804,110 @@ assert(
     diagSuccess.conditions.I?.passed === true &&
     diagSuccess.conditions.J?.passed === true,
   'R7. Authorized teacher passes all Conditions A–J cleanly'
+);
+
+// R8: Cross-school & cross-class resultId collision prevention
+const idSchoolA = buildScopedResultId('school-a', 'stu-2026-001', 'cls-primary-5', 'sub-math', 'First-Term', '2026-2027');
+const idSchoolB = buildScopedResultId('school-b', 'stu-2026-001', 'cls-primary-5', 'sub-math', 'First-Term', '2026-2027');
+const idClassB = buildScopedResultId('school-a', 'stu-2026-001', 'cls-primary-6', 'sub-math', 'First-Term', '2026-2027');
+const idVeryLong = buildScopedResultId(
+  'very-long-tenant-school-identifier-alpha-beta-gamma',
+  'student-very-long-identifier-000000123456',
+  'class-senior-secondary-science-arm-a',
+  'subject-further-mathematics-honours',
+  'Second-Term',
+  '2026-2027'
+);
+assert(
+  idSchoolA !== idSchoolB &&
+    idSchoolA !== idClassB &&
+    idSchoolA.includes('school-a') &&
+    idSchoolB.includes('school-b') &&
+    idVeryLong.length <= 128,
+  'R8. buildScopedResultId prevents cross-school and cross-class document ID collisions and stays <= 128 chars'
+);
+
+// R9: Membership role mismatch rejected even when UI role differs
+const diagRoleMismatch = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  membership: { ...liveMemA, role: 'PARENT' },
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'DRAFT',
+});
+assert(
+  diagRoleMismatch.authorized === false && diagRoleMismatch.diagnosticCode === 'MEMBERSHIP_MISSING',
+  'R9. Membership role mismatch (PARENT attempting TEACHER report write) is denied in pre-flight'
+);
+
+// R10: Strict DB teacherId link cannot be masked by cached teacherProfile
+const diagMissingDbTid = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  membership: { ...liveMemA, teacherId: undefined },
+  liveUserTeacherId: null,
+  enforceDbTeacherLink: true,
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'DRAFT',
+});
+assert(
+  diagMissingDbTid.authorized === false && diagMissingDbTid.diagnosticCode === 'MEMBERSHIP_MISSING',
+  'R10. enforceDbTeacherLink catches missing DB membership/user teacherId even if cached teacherProfile is present'
+);
+
+// R11: Nullable teacherId: null on legacy unlocked draft & UID classTeacherId support
+const legacyNullTeacherDraft: ResultDoc = {
+  ...draftA,
+  resultId: 'res_legacy_null_tid',
+  teacherId: null,
+};
+const resNullTidUpdate = canUpdateResult(authTeacherA, legacyNullTeacherDraft, {
+  ...legacyNullTeacherDraft,
+  teacherId: authTeacherA.uid,
+  status: 'SUBMITTED',
+  submittedBy: authTeacherA.uid,
+});
+classes.set('cls_uid_ct', {
+  classId: 'cls_uid_ct',
+  schoolId: 'school-a',
+  name: 'Primary 2',
+  classTeacherId: authTeacherA.uid,
+});
+const resUidClassTeacher = canCreateResult(authTeacherA, {
+  ...draftA,
+  resultId: 'res_uid_class_teacher',
+  classId: 'cls_uid_ct',
+});
+const diagUidClassTeacher = evaluateReportConditionsSync({
+  authUid: authTeacherA.uid,
+  authEmail: authTeacherA.email,
+  role: 'TEACHER',
+  isSuperAdmin: false,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  membership: liveMemA,
+  teacherProfile: { ...liveTeacherA, assignedClassIds: [] },
+  selectedClass: { ...liveClassA, classId: 'cls_uid_ct', classTeacherId: authTeacherA.uid },
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'DRAFT',
+});
+assert(
+  resNullTidUpdate.allowed === true &&
+    resUidClassTeacher.allowed === true &&
+    diagUidClassTeacher.authorized === true,
+  'R11. Legacy null teacherId normalizes cleanly to auth.uid and classTeacherId === auth.uid is authorized'
 );
 
 console.log('\n========================================');

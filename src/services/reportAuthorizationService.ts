@@ -58,6 +58,51 @@ const isDevEnv = (): boolean => {
 
 export const normalizeId = (val?: string | null): string => (val || '').trim().toLowerCase();
 
+const cleanDocSegment = (val: string): string =>
+  val
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+const shortStableHash = (raw: string): string => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < raw.length; i++) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+};
+
+/**
+ * Generates a deterministic, tenant-and-class-scoped Firestore document ID for a subject result.
+ * Including schoolId and classId prevents cross-tenant and cross-class document ID collisions
+ * when multiple schools use standard student/subject IDs (e.g. demo data or shared templates).
+ */
+export function buildScopedResultId(
+  schoolId: string,
+  studentId: string,
+  classId: string,
+  subjectId: string,
+  term: string,
+  academicSession: string
+): string {
+  const s = cleanDocSegment(normalizeId(schoolId)) || 'school';
+  const stu = cleanDocSegment(studentId) || 'stu';
+  const cls = cleanDocSegment(classId) || 'cls';
+  const sub = cleanDocSegment(subjectId) || 'sub';
+  const trm = cleanDocSegment(term) || 'term';
+  const ses = cleanDocSegment(academicSession) || 'ses';
+
+  const fullId = `res_${s}_${stu}_${cls}_${sub}_${trm}_${ses}`;
+  if (fullId.length <= 110) {
+    return fullId;
+  }
+
+  const hash = shortStableHash(`${normalizeId(schoolId)}|${studentId}|${classId}|${subjectId}|${term}|${academicSession}`);
+  return `res_${s.slice(0, 20)}_${stu.slice(0, 20)}_${cls.slice(0, 20)}_${sub.slice(0, 20)}_${hash}`;
+}
+
 /**
  * Single Source of Truth for Report Locking across UI, Services, and Firestore Rules.
  *
@@ -115,6 +160,8 @@ export interface EvaluateReportAuthInput {
   verifiedSchoolId: string;
   membership?: SchoolMembership | null;
   teacherProfile?: Teacher | null;
+  liveUserTeacherId?: string | null;
+  enforceDbTeacherLink?: boolean;
   selectedClass?: SchoolClass | null;
   selectedSubject?: Subject | null;
   targetStatus: ResultStatus;
@@ -211,12 +258,78 @@ export function evaluateReportConditionsSync(
         `Condition D failed: ${conditions.D.detail}`
       );
     }
+
+    if (input.isAtLeastAdmin && mem.role !== 'ADMIN') {
+      conditions.C = {
+        passed: false,
+        detail: `Membership role "${mem.role}" cannot authorize ADMIN report actions.`,
+      };
+      return fail(
+        'C',
+        'MEMBERSHIP_MISSING',
+        'Your active school membership does not grant administrative report permissions.',
+        `Condition C failed: ${conditions.C.detail}`
+      );
+    }
+    if (isTeacherRole && mem.role !== 'TEACHER') {
+      conditions.C = {
+        passed: false,
+        detail: `Membership role "${mem.role}" cannot authorize TEACHER report actions.`,
+      };
+      return fail(
+        'C',
+        'MEMBERSHIP_MISSING',
+        'Your active school membership does not have the Teacher role required to edit student reports.',
+        `Condition C failed: ${conditions.C.detail}`
+      );
+    }
+    if (!input.isAtLeastAdmin && !isTeacherRole) {
+      conditions.C = {
+        passed: false,
+        detail: `Role "${String(input.role || mem.role)}" is not permitted to write reports.`,
+      };
+      return fail(
+        'C',
+        'MEMBERSHIP_MISSING',
+        'Your account role does not have permission to create or edit student reports.',
+        `Condition C failed: ${conditions.C.detail}`
+      );
+    }
+
     conditions.C = { passed: true, detail: `Active ${mem.role} membership verified for ${schoolId}.` };
   } else {
     conditions.C = { passed: true, detail: 'Platform SUPER_ADMIN context verified.' };
   }
 
   if (isTeacherRole) {
+    if (input.enforceDbTeacherLink) {
+      const dbTid = (input.membership?.teacherId || input.liveUserTeacherId || '').trim();
+      if (!dbTid) {
+        conditions.B = {
+          passed: false,
+          detail: 'Neither membership.teacherId nor users/{uid}.teacherId is populated in Firestore.',
+        };
+        return fail(
+          'B',
+          'MEMBERSHIP_MISSING',
+          'Your school membership is missing its teaching staff profile link. Please sign out and sign back in, or ask your school administrator to re-link your teacher account.',
+          `Condition B failed: ${conditions.B.detail}`
+        );
+      }
+      if (input.teacherProfile && input.teacherProfile.teacherId !== dbTid) {
+        conditions.B = {
+          passed: false,
+          detail: `Teacher profile (${input.teacherProfile.teacherId}) does not match DB membership link (${dbTid}).`,
+        };
+        return fail(
+          'B',
+          'MEMBERSHIP_MISSING',
+          'Your teaching staff profile link is out of sync with your school membership. Please refresh the page.',
+          `Condition B failed: ${conditions.B.detail}`
+        );
+      }
+    }
+
     const t = input.teacherProfile;
     if (!t || t.status === 'INACTIVE') {
       conditions.B = {
@@ -298,7 +411,9 @@ export function evaluateReportConditionsSync(
   if (isTeacherRole && input.teacherProfile) {
     const t = input.teacherProfile;
     const assignedClasses = Array.isArray(t.assignedClassIds) ? t.assignedClassIds : [];
-    const isClassTeacher = input.selectedClass.classTeacherId === t.teacherId;
+    const isClassTeacher =
+      input.selectedClass.classTeacherId === t.teacherId ||
+      (!!input.authUid && input.selectedClass.classTeacherId === input.authUid);
     const classAuthorized = assignedClasses.includes(input.selectedClass.classId) || isClassTeacher;
 
     if (!classAuthorized) {
@@ -436,69 +551,486 @@ export function evaluateReportConditionsSync(
   };
 }
 
+export interface TargetResultCheckItem {
+  studentId: string;
+  targetResultId: string;
+  hasOriginal: boolean;
+  classScopedResultId?: string;
+}
+
 /**
- * Fetches live membership & teacher records from Firestore before evaluating Conditions A–J
- * so stale React state never hides missing memberships or out-of-sync teacher links.
+ * Fetches live membership, user, teacher, class, subject, and target result records from Firestore
+ * before evaluating Conditions A–J so stale React state or cross-tenant ID collisions never mask failures.
  */
 export async function verifyAndEvaluateReportAuthorization(
-  input: Omit<EvaluateReportAuthInput, 'membership' | 'teacherProfile'> & {
+  input: Omit<
+    EvaluateReportAuthInput,
+    'membership' | 'teacherProfile' | 'liveUserTeacherId' | 'enforceDbTeacherLink'
+  > & {
     cachedMembership?: SchoolMembership | null;
     cachedTeacher?: Teacher | null;
+    targetResults?: TargetResultCheckItem[];
   }
 ): Promise<{
   evaluation: ReportAuthorizationEvaluation;
   liveMembership: SchoolMembership | null;
   liveTeacher: Teacher | null;
+  resolvedResultIds: Map<string, string>;
+  liveExistingResultsMap: Map<string, Partial<Result> & { locked?: boolean }>;
 }> {
   const schoolId = normalizeId(input.verifiedSchoolId);
-  let liveMembership: SchoolMembership | null = input.cachedMembership || null;
-  let liveTeacher: Teacher | null = input.cachedTeacher || null;
+  let liveMembership: SchoolMembership | null = null;
+  let liveTeacher: Teacher | null = null;
+  let liveUserTeacherId: string | null = null;
+  let liveClass: SchoolClass | null = input.selectedClass || null;
+  let liveSubject: Subject | null = input.selectedSubject || null;
+  const resolvedResultIds = new Map<string, string>();
+  const liveExistingResultsMap = new Map<string, Partial<Result> & { locked?: boolean }>();
+
+  const buildEarlyFail = (
+    failedCondition: AuthorizationConditionKey,
+    diagnosticCode: ReportDiagnosticCode,
+    userMessage: string,
+    devMessage: string
+  ): ReportAuthorizationEvaluation => ({
+    authorized: false,
+    failedCondition,
+    diagnosticCode,
+    userMessage: isDevEnv() ? `[${diagnosticCode}] ${userMessage}` : userMessage,
+    devMessage,
+    conditions: {
+      A: { passed: !!input.authUid, detail: input.authUid ? 'UID present.' : 'UID missing.' },
+      [failedCondition]: { passed: false, detail: devMessage },
+    },
+  });
 
   if (input.authUid && schoolId && !input.isSuperAdmin) {
+    // 1. Live membership lookup (deterministic path checked by Firestore Rules)
     try {
       const mId = `${schoolId}_${input.authUid}`;
       const mSnap = await getDoc(doc(db, 'memberships', mId));
       if (mSnap.exists()) {
         liveMembership = { id: mSnap.id, ...(mSnap.data() as any) } as SchoolMembership;
-      } else {
-        liveMembership = null;
       }
     } catch (err) {
       console.warn('[ReportAuthDiagnostic] Live membership lookup failed:', err);
     }
 
-    const resolvedTid = liveMembership?.teacherId || input.cachedTeacher?.teacherId;
-    if (input.role === 'TEACHER' && resolvedTid) {
+    // 2. Live /users/{uid} fallback for resolveMembershipTeacherId()
+    try {
+      const uSnap = await getDoc(doc(db, 'users', input.authUid));
+      if (uSnap.exists()) {
+        const rawTid = (uSnap.data() as any)?.teacherId;
+        if (typeof rawTid === 'string' && rawTid.trim()) {
+          liveUserTeacherId = rawTid.trim();
+        }
+      }
+    } catch (err) {
+      console.warn('[ReportAuthDiagnostic] Live user doc lookup failed:', err);
+    }
+
+    // 3. Live teacher doc lookup strictly using DB-resolved teacherId (never cached React fallback)
+    const resolvedTid = (liveMembership?.teacherId || liveUserTeacherId || '').trim();
+    if (input.role === 'TEACHER' && !input.isAtLeastAdmin && resolvedTid) {
       try {
         const tSnap = await getDoc(doc(db, 'teachers', resolvedTid));
         if (tSnap.exists()) {
           const td = tSnap.data() as Teacher;
-          liveTeacher = { ...td, teacherId: td.teacherId || tSnap.id };
-        } else {
-          liveTeacher = null;
+          liveTeacher = { ...td, teacherId: tSnap.id };
         }
       } catch (err) {
         console.warn('[ReportAuthDiagnostic] Live teacher lookup failed:', err);
       }
     }
+
+    // 4. Live class & subject doc path verification (Rules require exists(/classes/$(classId)) & exists(/subjects/$(subjectId)))
+    if (input.selectedClass) {
+      try {
+        const cSnap = await getDoc(doc(db, 'classes', input.selectedClass.classId));
+        if (!cSnap.exists()) {
+          return {
+            evaluation: buildEarlyFail(
+              'E',
+              'CLASS_ASSIGNMENT_MISSING',
+              'The selected class record could not be verified at its database path. Please ask your administrator to re-save the class in Classes Management.',
+              `Condition E failed: /classes/${input.selectedClass.classId} does not exist.`
+            ),
+            liveMembership,
+            liveTeacher,
+            resolvedResultIds,
+            liveExistingResultsMap,
+          };
+        }
+        liveClass = { ...(cSnap.data() as SchoolClass), classId: cSnap.id };
+      } catch (err) {
+        console.warn('[ReportAuthDiagnostic] Live class path check failed:', err);
+        return {
+          evaluation: buildEarlyFail(
+            'E',
+            'SCHOOL_ID_MISMATCH',
+            'You do not have permission to access the selected class record.',
+            `Condition E failed: reading /classes/${input.selectedClass.classId} was denied.`
+          ),
+          liveMembership,
+          liveTeacher,
+          resolvedResultIds,
+          liveExistingResultsMap,
+        };
+      }
+    }
+
+    if (input.selectedSubject) {
+      try {
+        const sSnap = await getDoc(doc(db, 'subjects', input.selectedSubject.subjectId));
+        if (!sSnap.exists()) {
+          return {
+            evaluation: buildEarlyFail(
+              'E',
+              'SUBJECT_ASSIGNMENT_MISSING',
+              'The selected subject record could not be verified at its database path. Please ask your administrator to re-save the subject in Subjects Management.',
+              `Condition E failed: /subjects/${input.selectedSubject.subjectId} does not exist.`
+            ),
+            liveMembership,
+            liveTeacher,
+            resolvedResultIds,
+            liveExistingResultsMap,
+          };
+        }
+        liveSubject = { ...(sSnap.data() as Subject), subjectId: sSnap.id };
+      } catch (err) {
+        console.warn('[ReportAuthDiagnostic] Live subject path check failed:', err);
+        return {
+          evaluation: buildEarlyFail(
+            'E',
+            'SCHOOL_ID_MISMATCH',
+            'You do not have permission to access the selected subject record.',
+            `Condition E failed: reading /subjects/${input.selectedSubject.subjectId} was denied.`
+          ),
+          liveMembership,
+          liveTeacher,
+          resolvedResultIds,
+          liveExistingResultsMap,
+        };
+      }
+    }
+  } else if (input.isSuperAdmin) {
+    liveMembership = input.cachedMembership || null;
+    liveTeacher = input.cachedTeacher || null;
   }
 
   const evaluation = evaluateReportConditionsSync({
     ...input,
     membership: liveMembership,
     teacherProfile: liveTeacher,
+    liveUserTeacherId,
+    enforceDbTeacherLink: !input.isSuperAdmin,
+    selectedClass: liveClass,
+    selectedSubject: liveSubject,
   });
 
-  if (!evaluation.authorized && isDevEnv()) {
-    console.error('[ReportAuthDiagnostic] Pre-flight check denied:', {
-      diagnosticCode: evaluation.diagnosticCode,
-      failedCondition: evaluation.failedCondition,
-      devMessage: evaluation.devMessage,
-      conditions: evaluation.conditions,
-    });
+  if (!evaluation.authorized) {
+    if (isDevEnv()) {
+      console.error('[ReportAuthDiagnostic] Pre-flight check denied:', {
+        diagnosticCode: evaluation.diagnosticCode,
+        failedCondition: evaluation.failedCondition,
+        devMessage: evaluation.devMessage,
+        conditions: evaluation.conditions,
+      });
+    }
+    return { evaluation, liveMembership, liveTeacher, resolvedResultIds, liveExistingResultsMap };
   }
 
-  return { evaluation, liveMembership, liveTeacher };
+  // 5. Target /results/{resultId} pre-flight collision & server lock inspection
+  if (!input.isSuperAdmin && input.targetResults && input.targetResults.length > 0) {
+    const resolvedTid = (liveMembership?.teacherId || liveUserTeacherId || '').trim();
+    let collisionError: ReportAuthorizationEvaluation | null = null;
+    let totalCheckedRows = 0;
+    let unlockedTargetCount = 0;
+    let firstServerLockReason = '';
+
+    await Promise.all(
+      input.targetResults.map(async (item) => {
+        totalCheckedRows++;
+        let chosenId = item.targetResultId;
+
+        const inspectDocId = async (docId: string) => {
+          try {
+            const snap = await getDoc(doc(db, 'results', docId));
+            return { denied: false as const, snap };
+          } catch {
+            return { denied: true as const, snap: null };
+          }
+        };
+
+        let probe = await inspectDocId(chosenId);
+        const needsReroute =
+          probe.denied ||
+          (probe.snap?.exists() &&
+            (normalizeId((probe.snap.data() as any).schoolId) !== schoolId ||
+              (liveClass && (probe.snap.data() as any).classId !== liveClass.classId)));
+
+        if (needsReroute) {
+          if (!item.hasOriginal && item.classScopedResultId && item.classScopedResultId !== chosenId) {
+            chosenId = item.classScopedResultId;
+            probe = await inspectDocId(chosenId);
+            const stillConflict =
+              probe.denied ||
+              (probe.snap?.exists() &&
+                (normalizeId((probe.snap.data() as any).schoolId) !== schoolId ||
+                  (liveClass && (probe.snap.data() as any).classId !== liveClass.classId)));
+            if (stillConflict && !collisionError) {
+              collisionError = buildEarlyFail(
+                'D',
+                'SCHOOL_ID_MISMATCH',
+                'A conflicting report record exists for another school or class. Please refresh and try again.',
+                `Condition D failed: re-routed target /results/${chosenId} collided with another school/class.`
+              );
+              return;
+            }
+          } else if (!collisionError) {
+            collisionError = buildEarlyFail(
+              'D',
+              'SCHOOL_ID_MISMATCH',
+              'This report record conflicts with an entry belonging to another school or class.',
+              `Condition D failed: /results/${chosenId} access denied or belongs to another school/class.`
+            );
+            return;
+          }
+        }
+
+        resolvedResultIds.set(item.studentId, chosenId);
+
+        if (probe.snap?.exists()) {
+          const existingData = probe.snap.data() as Partial<Result> & { locked?: boolean };
+          liveExistingResultsMap.set(item.studentId, existingData);
+          const lockStatus = isResultRecordLocked(
+            existingData,
+            input.authUid,
+            resolvedTid || null,
+            input.isAtLeastAdmin
+          );
+          if (!lockStatus.locked) {
+            unlockedTargetCount++;
+          } else if (!firstServerLockReason) {
+            firstServerLockReason = lockStatus.reason || 'Report record is locked.';
+          }
+        } else {
+          unlockedTargetCount++;
+        }
+      })
+    );
+
+    if (collisionError) {
+      return {
+        evaluation: collisionError,
+        liveMembership,
+        liveTeacher,
+        resolvedResultIds,
+        liveExistingResultsMap,
+      };
+    }
+
+    if (totalCheckedRows > 0 && unlockedTargetCount === 0) {
+      const lockEval = buildEarlyFail(
+        'I',
+        'REPORT_LOCKED',
+        'These student reports are locked on the server (already approved, published, or owned by another teacher) and cannot be modified.',
+        `Condition I failed: ${firstServerLockReason}`
+      );
+      return {
+        evaluation: lockEval,
+        liveMembership,
+        liveTeacher,
+        resolvedResultIds,
+        liveExistingResultsMap,
+      };
+    }
+  }
+
+  return { evaluation, liveMembership, liveTeacher, resolvedResultIds, liveExistingResultsMap };
+}
+
+/**
+ * Runs read-only live diagnostics if batch.commit() still fails with Firestore permission-denied,
+ * returning an accurate, safe, non-PII error message identifying the exact failing rule condition.
+ */
+export async function diagnoseReportRuleDenial(params: {
+  err: unknown;
+  actionLabel: 'save' | 'submit' | 'approve' | 'publish';
+  authUid?: string | null;
+  authEmail?: string | null;
+  role: UserRole | null;
+  isSuperAdmin: boolean;
+  isAtLeastAdmin: boolean;
+  verifiedSchoolId: string;
+  classId: string;
+  subjectId: string;
+  targetStatus: ResultStatus;
+  targetResultIds: string[];
+}): Promise<{ code: ReportDiagnosticCode; userMessage: string }> {
+  const baseFailure = formatReportWriteFailure(params.err, 'REPORT_WRITE', params.actionLabel);
+  const raw = params.err instanceof Error ? params.err.message : String(params.err || '');
+  const isPermError =
+    raw.toLowerCase().includes('missing or insufficient permissions') ||
+    raw.includes('permission-denied');
+
+  if (!isPermError || !params.authUid || !params.verifiedSchoolId || params.isSuperAdmin) {
+    return baseFailure;
+  }
+
+  const schoolId = normalizeId(params.verifiedSchoolId);
+  const wrap = (code: ReportDiagnosticCode, msg: string) => ({
+    code,
+    userMessage: isDevEnv() ? `[${code}] ${msg}` : msg,
+  });
+
+  try {
+    const mSnap = await getDoc(doc(db, 'memberships', `${schoolId}_${params.authUid}`));
+    if (!mSnap.exists()) {
+      return wrap(
+        'MEMBERSHIP_MISSING',
+        'Your active school membership record was not found in the database. Please sign out and sign back in.'
+      );
+    }
+    const mData = mSnap.data() as any;
+    if (mData.status !== 'ACTIVE' || mData.userId !== params.authUid) {
+      return wrap(
+        'MEMBERSHIP_MISSING',
+        'Your school membership is not active or not linked to your current sign-in account.'
+      );
+    }
+    if (normalizeId(mData.schoolId) !== schoolId) {
+      return wrap(
+        'SCHOOL_ID_MISMATCH',
+        'Your school membership belongs to a different school than the active workspace.'
+      );
+    }
+
+    if (params.role === 'TEACHER' && !params.isAtLeastAdmin) {
+      if (mData.role !== 'TEACHER') {
+        return wrap(
+          'MEMBERSHIP_MISSING',
+          'Your school membership role is not configured as Teacher for this school.'
+        );
+      }
+
+      let tid = (mData.teacherId || '').trim();
+      if (!tid) {
+        const uSnap = await getDoc(doc(db, 'users', params.authUid));
+        tid = ((uSnap.exists() ? (uSnap.data() as any)?.teacherId : '') || '').trim();
+      }
+      if (!tid) {
+        return wrap(
+          'MEMBERSHIP_MISSING',
+          'Your school membership is missing its teacher profile link. Please sign out and sign in again.'
+        );
+      }
+
+      const tSnap = await getDoc(doc(db, 'teachers', tid));
+      if (!tSnap.exists()) {
+        return wrap(
+          'MEMBERSHIP_MISSING',
+          'Your linked teaching staff profile could not be found in the database.'
+        );
+      }
+      const tData = tSnap.data() as Teacher;
+      if (tData.status === 'INACTIVE') {
+        return wrap('MEMBERSHIP_MISSING', 'Your teaching staff profile is marked inactive.');
+      }
+      if (normalizeId(tData.schoolId) !== schoolId) {
+        return wrap(
+          'SCHOOL_ID_MISMATCH',
+          'Your teaching staff profile belongs to a different school.'
+        );
+      }
+      const authEmail = normalizeId(params.authEmail);
+      if (tData.userId !== params.authUid && (!authEmail || normalizeId(tData.email) !== authEmail)) {
+        return wrap(
+          'MEMBERSHIP_MISSING',
+          'Your teaching staff profile is not linked to your current email or account.'
+        );
+      }
+
+      const cSnap = await getDoc(doc(db, 'classes', params.classId));
+      if (!cSnap.exists() || normalizeId((cSnap.data() as any).schoolId) !== schoolId) {
+        return wrap(
+          'CLASS_ASSIGNMENT_MISSING',
+          'The selected class does not exist under your active school.'
+        );
+      }
+      const cData = cSnap.data() as SchoolClass;
+      const assignedClasses = Array.isArray(tData.assignedClassIds) ? tData.assignedClassIds : [];
+      const classOk =
+        assignedClasses.includes(params.classId) ||
+        cData.classTeacherId === tid ||
+        cData.classTeacherId === params.authUid;
+      if (!classOk) {
+        return wrap(
+          'CLASS_ASSIGNMENT_MISSING',
+          'You are not assigned as a subject or class teacher for the selected class.'
+        );
+      }
+
+      const sSnap = await getDoc(doc(db, 'subjects', params.subjectId));
+      if (!sSnap.exists() || normalizeId((sSnap.data() as any).schoolId) !== schoolId) {
+        return wrap(
+          'SUBJECT_ASSIGNMENT_MISSING',
+          'The selected subject does not exist under your active school.'
+        );
+      }
+      const sData = sSnap.data() as Subject;
+      const teacherSubs = Array.isArray(tData.subjects) ? tData.subjects : [];
+      if (
+        teacherSubs.length > 0 &&
+        !teacherSubs.includes(params.subjectId) &&
+        !teacherSubs.includes(sData.name)
+      ) {
+        return wrap(
+          'SUBJECT_ASSIGNMENT_MISSING',
+          'You are not assigned to teach the selected subject.'
+        );
+      }
+
+      for (const rId of params.targetResultIds.slice(0, 5)) {
+        try {
+          const rSnap = await getDoc(doc(db, 'results', rId));
+          if (rSnap.exists()) {
+            const rData = rSnap.data() as Partial<Result> & { locked?: boolean };
+            if (normalizeId(rData.schoolId) !== schoolId) {
+              return wrap(
+                'SCHOOL_ID_MISMATCH',
+                'A conflicting report record exists for another school.'
+              );
+            }
+            if (rData.classId !== params.classId || rData.subjectId !== params.subjectId) {
+              return wrap(
+                'SCHOOL_ID_MISMATCH',
+                'A conflicting report record exists for a different class or subject.'
+              );
+            }
+            const lockCheck = isResultRecordLocked(rData, params.authUid, tid, false);
+            if (lockCheck.locked) {
+              return wrap(
+                'REPORT_LOCKED',
+                'One or more target student reports are already approved, published, locked, or owned by another teacher.'
+              );
+            }
+          }
+        } catch {
+          return wrap(
+            'SCHOOL_ID_MISMATCH',
+            'One of the target report IDs conflicts with a record belonging to another school.'
+          );
+        }
+      }
+    }
+  } catch (diagErr) {
+    if (isDevEnv()) {
+      console.warn('[ReportAuthDiagnostic] Post-denial inspection error:', diagErr);
+    }
+  }
+
+  return baseFailure;
 }
 
 /**

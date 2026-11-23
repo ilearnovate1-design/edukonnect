@@ -23,6 +23,8 @@ import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
 import { formatFriendlyFirestoreError } from '../../utils/firestoreErrors';
 import {
+  buildScopedResultId,
+  diagnoseReportRuleDenial,
   evaluateReportConditionsSync,
   formatReportWriteFailure,
   isResultRecordLocked,
@@ -119,6 +121,10 @@ export const ResultsPage: React.FC = () => {
   const [showRevisionModal, setShowRevisionModal] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
   const [pendingSaveStatus, setPendingSaveStatus] = useState<ResultStatus>('PUBLISHED');
+  const [pendingWriteContext, setPendingWriteContext] = useState<{
+    resolvedResultIds?: Map<string, string>;
+    liveExistingResultsMap?: Map<string, Partial<Result> & { locked?: boolean }>;
+  } | null>(null);
 
   // CSV Import Modal
   const [showCsvModal, setShowCsvModal] = useState(false);
@@ -179,7 +185,9 @@ export const ResultsPage: React.FC = () => {
         let cList: SchoolClass[] = [];
         cSnap.forEach((d) => {
           const item = d.data() as SchoolClass;
-          if ((item.schoolId || '').trim().toLowerCase() === verifiedSchoolId) cList.push(item);
+          if ((item.schoolId || '').trim().toLowerCase() === verifiedSchoolId) {
+            cList.push({ ...item, classId: item.classId || d.id });
+          }
         });
 
         if (role === 'TEACHER') {
@@ -203,7 +211,9 @@ export const ResultsPage: React.FC = () => {
         let subList: Subject[] = [];
         subSnap.forEach((d) => {
           const item = d.data() as Subject;
-          if ((item.schoolId || '').trim().toLowerCase() === verifiedSchoolId) subList.push(item);
+          if ((item.schoolId || '').trim().toLowerCase() === verifiedSchoolId) {
+            subList.push({ ...item, subjectId: item.subjectId || d.id });
+          }
         });
 
         if (role === 'TEACHER' && currentTeacher?.subjects && currentTeacher.subjects.length > 0) {
@@ -275,7 +285,7 @@ export const ResultsPage: React.FC = () => {
         const existingResultsMap = new Map<string, Result>();
         rSnap.forEach((d) => {
           const r = d.data() as Result;
-          existingResultsMap.set(r.studentId, r);
+          existingResultsMap.set(r.studentId, { ...r, resultId: d.id });
         });
 
         const newDraftMap = new Map<string, StudentScoreDraft>();
@@ -424,7 +434,28 @@ export const ResultsPage: React.FC = () => {
       return draft?.originalResult || ({ status: draft?.status || 'DRAFT' } as Partial<Result>);
     });
 
-    const { evaluation } = await verifyAndEvaluateReportAuthorization({
+    const editableStudents = students.filter((s) => !isRowLockedForCurrentUser(scoresMap.get(s.studentId)));
+    const cleanSession = selectedSession.replace(/[^a-zA-Z0-9]/g, '-');
+    const cleanTerm = selectedTerm.replace(/\s+/g, '-');
+    const targetResults = editableStudents.map((s) => {
+      const draft = scoresMap.get(s.studentId);
+      const scopedId = buildScopedResultId(
+        verifiedSchoolId,
+        s.studentId,
+        selectedClassId,
+        selectedSubjectId,
+        cleanTerm,
+        cleanSession
+      );
+      return {
+        studentId: s.studentId,
+        targetResultId: draft?.originalResult?.resultId || scopedId,
+        hasOriginal: !!draft?.originalResult,
+        classScopedResultId: scopedId,
+      };
+    });
+
+    const { evaluation, resolvedResultIds, liveExistingResultsMap } = await verifyAndEvaluateReportAuthorization({
       authUid: currentUser?.uid,
       authEmail: currentUser?.email,
       role,
@@ -437,6 +468,7 @@ export const ResultsPage: React.FC = () => {
       selectedSubject,
       targetStatus: statusToSet,
       existingResults: existingRows,
+      targetResults,
     });
 
     if (!evaluation.authorized) {
@@ -444,7 +476,6 @@ export const ResultsPage: React.FC = () => {
       return;
     }
 
-    const editableStudents = students.filter((s) => !isRowLockedForCurrentUser(scoresMap.get(s.studentId)));
     if (editableStudents.length === 0) {
       const lockCheck = evaluateReportConditionsSync({
         authUid: currentUser?.uid,
@@ -498,14 +529,22 @@ export const ResultsPage: React.FC = () => {
 
     if (hasPublishedChanges) {
       setPendingSaveStatus(statusToSet);
+      setPendingWriteContext({ resolvedResultIds, liveExistingResultsMap });
       setShowRevisionModal(true);
       return;
     }
 
-    executeSaveResults(statusToSet);
+    executeSaveResults(statusToSet, undefined, { resolvedResultIds, liveExistingResultsMap });
   };
 
-  const executeSaveResults = async (statusToSet: ResultStatus, reason?: string) => {
+  const executeSaveResults = async (
+    statusToSet: ResultStatus,
+    reason?: string,
+    writeContext?: {
+      resolvedResultIds?: Map<string, string>;
+      liveExistingResultsMap?: Map<string, Partial<Result> & { locked?: boolean }>;
+    }
+  ) => {
     if (!currentUser?.uid || !verifiedSchoolId) {
       setErrorMsg('Missing authenticated user or verified school membership.');
       return;
@@ -542,7 +581,7 @@ export const ResultsPage: React.FC = () => {
       const nowIso = new Date().toISOString();
       const cleanSession = selectedSession.replace(/[^a-zA-Z0-9]/g, '-');
       const cleanTerm = selectedTerm.replace(/\s+/g, '-');
-      const savedStudentIds = new Set<string>();
+      const savedResultIds = new Map<string, string>();
       const lockedSkippedCount = students.filter((s) => isRowLockedForCurrentUser(scoresMap.get(s.studentId))).length;
       const willLock = statusToSet === 'APPROVED' || statusToSet === 'PUBLISHED';
 
@@ -556,25 +595,50 @@ export const ResultsPage: React.FC = () => {
         // Skip rows that teachers cannot edit (APPROVED/PUBLISHED/locked or owned by another teacher)
         if (isRowLockedForCurrentUser(item)) return;
 
-        const resultId = `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
+        const serverExisting = writeContext?.liveExistingResultsMap?.get(s.studentId);
+        const effectiveOriginal = item.originalResult || (serverExisting as Result | undefined);
+        if (
+          serverExisting &&
+          isResultRecordLocked(
+            serverExisting,
+            currentUser.uid,
+            currentTeacher?.teacherId,
+            isAtLeastAdmin
+          ).locked
+        ) {
+          return;
+        }
+
+        const scopedFallbackId = buildScopedResultId(
+          verifiedSchoolId,
+          s.studentId,
+          selectedClassId,
+          selectedSubjectId,
+          cleanTerm,
+          cleanSession
+        );
+        const resultId =
+          writeContext?.resolvedResultIds?.get(s.studentId) ||
+          effectiveOriginal?.resultId ||
+          scopedFallbackId;
         const ref = doc(db, 'results', resultId);
 
         const caScore = item.componentScores['ca'] ?? item.componentScores['ca1'] ?? 0;
         const examScore = item.componentScores['exam'] ?? item.totalScore ?? 0;
 
         // Clone auditHistory cleanly (never mutate existing state array)
-        const auditHistory: ResultAuditEntry[] = [...(item.originalResult?.auditHistory || [])];
-        if (item.originalResult && item.originalResult.status === 'PUBLISHED' && item.originalResult.totalScore !== item.totalScore) {
+        const auditHistory: ResultAuditEntry[] = [...(effectiveOriginal?.auditHistory || [])];
+        if (effectiveOriginal && effectiveOriginal.status === 'PUBLISHED' && effectiveOriginal.totalScore !== item.totalScore) {
           auditHistory.push({
             timestamp: nowIso,
             userId: currentUser.uid,
             userName: currentUser.displayName || currentUser.email || 'User',
             action: 'UPDATED',
-            previousScores: item.originalResult.componentScores,
+            previousScores: effectiveOriginal.componentScores,
             newScores: item.componentScores,
-            previousTotal: item.originalResult.totalScore,
+            previousTotal: effectiveOriginal.totalScore,
             newTotal: item.totalScore,
-            previousGrade: item.originalResult.grade,
+            previousGrade: effectiveOriginal.grade,
             newGrade: item.grade,
             reason: reason || 'Administrative correction',
           });
@@ -582,12 +646,15 @@ export const ResultsPage: React.FC = () => {
 
         // Teachers always normalize teacherId to their verified auth UID so rules ownership passes cleanly
         const ownerUid = isAtLeastAdmin
-          ? (item.originalResult?.teacherId || currentUser.uid)
+          ? (effectiveOriginal?.teacherId || currentUser.uid)
           : currentUser.uid;
+
+        // Preserve exact schoolId casing on existing docs so immutable equality in Firestore Rules never trips
+        const docSchoolId = effectiveOriginal?.schoolId || verifiedSchoolId;
 
         const payload: Record<string, any> = {
           resultId,
-          schoolId: verifiedSchoolId,
+          schoolId: docSchoolId,
           studentId: s.studentId,
           classId: selectedClassId,
           subjectId: selectedSubjectId,
@@ -631,14 +698,14 @@ export const ResultsPage: React.FC = () => {
           payload.lockedAt = serverTimestamp();
         }
 
-        if (!item.originalResult?.createdAt) {
+        if (!effectiveOriginal?.createdAt) {
           payload.createdAt = serverTimestamp();
         } else {
-          payload.createdAt = item.originalResult.createdAt;
+          payload.createdAt = effectiveOriginal.createdAt;
         }
 
         batch.set(ref, payload, { merge: true });
-        savedStudentIds.add(s.studentId);
+        savedResultIds.set(s.studentId, resultId);
         count++;
       });
 
@@ -651,7 +718,20 @@ export const ResultsPage: React.FC = () => {
       try {
         await batch.commit();
       } catch (writeErr: any) {
-        const failure = formatReportWriteFailure(writeErr, 'REPORT_WRITE', actionVerb);
+        const failure = await diagnoseReportRuleDenial({
+          err: writeErr,
+          actionLabel: actionVerb,
+          authUid: currentUser.uid,
+          authEmail: currentUser.email,
+          role,
+          isSuperAdmin,
+          isAtLeastAdmin,
+          verifiedSchoolId,
+          classId: selectedClassId,
+          subjectId: selectedSubjectId,
+          targetStatus: statusToSet,
+          targetResultIds: Array.from(savedResultIds.values()),
+        });
         setErrorMsg(failure.userMessage);
         return;
       }
@@ -659,17 +739,19 @@ export const ResultsPage: React.FC = () => {
       // Update local state statuses only for saved rows
       const updated = new Map<string, StudentScoreDraft>(scoresMap);
       students.forEach((s) => {
-        if (!savedStudentIds.has(s.studentId)) return;
+        const usedResultId = savedResultIds.get(s.studentId);
+        if (!usedResultId) return;
         const existing = updated.get(s.studentId);
         if (existing) {
-          const resultId = `res_${s.studentId}_${selectedSubjectId}_${cleanTerm}_${cleanSession}`;
+          const serverOriginal = writeContext?.liveExistingResultsMap?.get(s.studentId);
+          const mergedOriginal = existing.originalResult || (serverOriginal as Result | undefined);
           updated.set(s.studentId, {
             ...existing,
             status: statusToSet,
             originalResult: {
-              ...(existing.originalResult || {}),
-              resultId,
-              schoolId: verifiedSchoolId,
+              ...(mergedOriginal || {}),
+              resultId: usedResultId,
+              schoolId: mergedOriginal?.schoolId || verifiedSchoolId,
               studentId: s.studentId,
               classId: selectedClassId,
               subjectId: selectedSubjectId,
@@ -682,9 +764,9 @@ export const ResultsPage: React.FC = () => {
               status: statusToSet,
               isLocked: willLock,
               teacherId: isAtLeastAdmin
-                ? (existing.originalResult?.teacherId || currentUser.uid)
+                ? (mergedOriginal?.teacherId || currentUser.uid)
                 : currentUser.uid,
-              createdAt: existing.originalResult?.createdAt || null,
+              createdAt: mergedOriginal?.createdAt || null,
               updatedAt: null,
             } as Result
           });
@@ -734,6 +816,7 @@ export const ResultsPage: React.FC = () => {
       }
       setShowRevisionModal(false);
       setRevisionReason('');
+      setPendingWriteContext(null);
     } finally {
       setSaving(false);
     }
@@ -1443,7 +1526,7 @@ export const ResultsPage: React.FC = () => {
               variant="primary"
               size="sm"
               disabled={!revisionReason.trim() || saving}
-              onClick={() => executeSaveResults(pendingSaveStatus, revisionReason.trim())}
+              onClick={() => executeSaveResults(pendingSaveStatus, revisionReason.trim(), pendingWriteContext || undefined)}
               className="text-xs font-bold"
             >
               Confirm & Save Revision
