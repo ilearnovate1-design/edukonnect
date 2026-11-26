@@ -100,7 +100,7 @@ function isValidTenantSchoolId(id: unknown): id is string {
 
 function hasActiveMembership(auth: AuthContext | null, schoolId: string): MembershipDoc | null {
   if (!auth || !isValidTenantSchoolId(schoolId)) return null;
-  const m = memberships.get(`${schoolId}_${auth.uid}`);
+  const m = memberships.get(`${strLower(schoolId)}_${auth.uid}`);
   if (!m) return null;
   if (m.userId !== auth.uid || strLower(m.schoolId) !== strLower(schoolId) || m.status !== 'ACTIVE') return null;
   return m;
@@ -983,6 +983,34 @@ assert(
     superAdminPreviewNoTeacher.authorized === false &&
     superAdminPreviewNoTeacher.userMessage.includes('SuperAdmin Preview'),
   'R14. SuperAdmin Teacher View preview accurately evaluates previewed teacher permissions and handles missing teacher selection'
+);
+
+// R15: Direct teacher saving draft after SuperAdmin preview or with mixed-case legacy schoolId on existing doc
+const mixedCaseDraftFromPreview: ResultDoc = {
+  ...draftA,
+  resultId: 'res_mixed_case_preview',
+  schoolId: 'School-A',
+  teacherId: liveTeacherA.teacherId,
+  status: 'DRAFT',
+  isLocked: false,
+};
+const directTeacherUpdateMixedCase = canUpdateResult(authTeacherA, mixedCaseDraftFromPreview, {
+  ...mixedCaseDraftFromPreview,
+  teacherId: authTeacherA.uid,
+  totalScore: 84,
+  grade: 'A',
+  status: 'DRAFT',
+  isLocked: false,
+});
+const directTeacherFreshDraft = canCreateResult(authTeacherA, {
+  ...draftA,
+  resultId: 'res_direct_teacher_fresh',
+  status: 'DRAFT',
+  isLocked: false,
+});
+assert(
+  directTeacherUpdateMixedCase.allowed === true && directTeacherFreshDraft.allowed === true,
+  'R15. Direct teacher login can create and update drafts (including drafts staged with teacher doc ID or mixed-case schoolId)'
 );
 
 console.log('\n========================================');

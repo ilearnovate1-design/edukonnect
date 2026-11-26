@@ -69,15 +69,15 @@ service cloud.firestore {
     function hasActiveMembership(schoolId) {
       return isAuthenticated() &&
         isValidTenantSchoolId(schoolId) &&
-        exists(/databases/$(database)/documents/memberships/$(schoolId + '_' + request.auth.uid)) &&
+        exists(/databases/$(database)/documents/memberships/$(strLower(schoolId) + '_' + request.auth.uid)) &&
         isMembershipDataActive(
           schoolId,
-          get(/databases/$(database)/documents/memberships/$(schoolId + '_' + request.auth.uid)).data
+          get(/databases/$(database)/documents/memberships/$(strLower(schoolId) + '_' + request.auth.uid)).data
         );
     }
 
     function getMembership(schoolId) {
-      return get(/databases/$(database)/documents/memberships/$(schoolId + '_' + request.auth.uid)).data;
+      return get(/databases/$(database)/documents/memberships/$(strLower(schoolId) + '_' + request.auth.uid)).data;
     }
 
     function isSchoolAdmin(schoolId) {
@@ -362,7 +362,7 @@ service cloud.firestore {
           isValidTenantSchoolId(schoolId) &&
           !exists(/databases/$(database)/documents/schools/$(schoolId)) &&
           request.resource.data.get('schoolId', '') == schoolId &&
-          existsAfter(/databases/$(database)/documents/memberships/$(schoolId + '_' + request.auth.uid))
+          existsAfter(/databases/$(database)/documents/memberships/$(strLower(schoolId) + '_' + request.auth.uid))
         )
       );
       allow update: if isAuthenticated() && isSchoolAdmin(schoolId);
@@ -438,7 +438,7 @@ service cloud.firestore {
         isSuperAdmin() || (
           isValidTenantSchoolId(request.resource.data.get('schoolId', '')) &&
           isNonEmptyId(request.resource.data.get('userId', '')) &&
-          membershipId == request.resource.data.schoolId + '_' + request.resource.data.userId &&
+          membershipId == strLower(request.resource.data.schoolId) + '_' + request.resource.data.userId &&
           request.resource.data.get('role', '') in ['ADMIN', 'TEACHER', 'PARENT'] &&
           request.resource.data.get('status', '') in ['ACTIVE', 'INVITED', 'SUSPENDED', 'REVOKED'] && (
             isSchoolAdmin(request.resource.data.schoolId) || (
@@ -508,7 +508,7 @@ service cloud.firestore {
           request.resource.data.get('role', 'PARENT') in ['TEACHER', 'PARENT', 'ADMIN'] && (
             !isValidTenantSchoolId(request.resource.data.get('schoolId', '')) ||
             hasActiveMembership(request.resource.data.get('schoolId', '')) ||
-            existsAfter(/databases/$(database)/documents/memberships/$(request.resource.data.get('schoolId', '') + '_' + request.auth.uid))
+            existsAfter(/databases/$(database)/documents/memberships/$(strLower(request.resource.data.get('schoolId', '')) + '_' + request.auth.uid))
           )
         )
       );
@@ -536,12 +536,12 @@ service cloud.firestore {
               isValidTenantSchoolId(request.resource.data.get('schoolId', '')) &&
               (
                 hasActiveMembership(request.resource.data.schoolId) ||
-                existsAfter(/databases/$(database)/documents/memberships/$(request.resource.data.schoolId + '_' + request.auth.uid))
+                existsAfter(/databases/$(database)/documents/memberships/$(strLower(request.resource.data.schoolId) + '_' + request.auth.uid))
               ) &&
               request.resource.data.get('role', '') == (
                 hasActiveMembership(request.resource.data.schoolId)
                   ? getMembership(request.resource.data.schoolId).get('role', '')
-                  : getAfter(/databases/$(database)/documents/memberships/$(request.resource.data.schoolId + '_' + request.auth.uid)).data.get('role', '')
+                  : getAfter(/databases/$(database)/documents/memberships/$(strLower(request.resource.data.schoolId) + '_' + request.auth.uid)).data.get('role', '')
               ) &&
               request.resource.data.get('approvalStatus', 'APPROVED') == 'APPROVED'
             )
@@ -582,7 +582,7 @@ service cloud.firestore {
         ('schoolId' in resource.data) &&
         isValidTenantSchoolId(resource.data.schoolId) &&
         request.resource.data.get('schoolId', '') == resource.data.schoolId &&
-        existsAfter(/databases/$(database)/documents/memberships/$(resource.data.schoolId + '_' + request.auth.uid)) &&
+        existsAfter(/databases/$(database)/documents/memberships/$(strLower(resource.data.schoolId) + '_' + request.auth.uid)) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['parentIds', 'parentEmails', 'updatedAt'])
       );
       allow delete: if canDeleteAsSchoolAdmin();
@@ -617,7 +617,7 @@ service cloud.firestore {
         request.resource.data.get('userId', '') == request.auth.uid &&
         (
           hasActiveMembership(resource.data.schoolId) ||
-          existsAfter(/databases/$(database)/documents/memberships/$(resource.data.schoolId + '_' + request.auth.uid))
+          existsAfter(/databases/$(database)/documents/memberships/$(strLower(resource.data.schoolId) + '_' + request.auth.uid))
         ) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['userId', 'updatedAt'])
       );
@@ -646,7 +646,7 @@ service cloud.firestore {
         request.resource.data.get('userId', '') == request.auth.uid &&
         (
           hasActiveMembership(resource.data.schoolId) ||
-          existsAfter(/databases/$(database)/documents/memberships/$(resource.data.schoolId + '_' + request.auth.uid))
+          existsAfter(/databases/$(database)/documents/memberships/$(strLower(resource.data.schoolId) + '_' + request.auth.uid))
         ) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['userId', 'status', 'updatedAt'])
       );

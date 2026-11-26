@@ -1040,16 +1040,16 @@ export async function diagnoseReportRuleDenial(params: {
         if (params.failedDetail) {
           const d = params.failedDetail;
           if (
-            (rData.schoolId && rData.schoolId !== d.expectedSchoolId) ||
-            (rData.studentId && rData.studentId !== d.studentId) ||
-            (rData.classId && rData.classId !== d.classId) ||
-            (rData.subjectId && rData.subjectId !== d.subjectId) ||
-            (rData.academicSession && rData.academicSession !== d.academicSession) ||
-            (rData.term && rData.term !== d.term)
+            (rData.schoolId ?? '') !== d.expectedSchoolId ||
+            (rData.studentId ?? '') !== d.studentId ||
+            (rData.classId ?? '') !== d.classId ||
+            (rData.subjectId ?? '') !== d.subjectId ||
+            (rData.academicSession ?? '') !== d.academicSession ||
+            (rData.term ?? '') !== d.term
           ) {
             return wrap(
               'SCHOOL_ID_MISMATCH',
-              'An existing report record at this path has mismatched school, class, subject, session, or term metadata.'
+              'An existing report record at this path has mismatched or missing school, class, subject, session, or term metadata.'
             );
           }
         }
