@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  collection, getDocs, doc, setDoc, serverTimestamp, query, where 
+  collection, getDocs, doc, setDoc, serverTimestamp, query, where, updateDoc, arrayUnion 
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { SchoolClass, Teacher, Student } from '../../types';
@@ -50,26 +50,25 @@ export const ClassesPage: React.FC = () => {
 
     setLoading(true);
     try {
+      const cSnap = await getDocs(query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)));
       let classesList: SchoolClass[] = [];
+      cSnap.forEach((d) => {
+        const c = d.data() as SchoolClass;
+        classesList.push({ ...c, classId: c.classId || d.id });
+      });
 
-      if (role === 'TEACHER' && currentTeacher) {
-        if (currentTeacher.assignedClassIds && currentTeacher.assignedClassIds.length > 0) {
-          const cSnap = await getDocs(
-            query(
-              collection(db, 'classes'),
-              where('schoolId', '==', cleanSchool),
-              where('classId', 'in', currentTeacher.assignedClassIds)
-            )
+      if (role === 'TEACHER') {
+        if (!currentTeacher) {
+          classesList = [];
+        } else {
+          const assignedIds = currentTeacher.assignedClassIds || [];
+          classesList = classesList.filter(
+            (c) =>
+              assignedIds.includes(c.classId) ||
+              (!!currentTeacher.teacherId && c.classTeacherId === currentTeacher.teacherId) ||
+              (!!currentTeacher.userId && c.classTeacherId === currentTeacher.userId)
           );
-          cSnap.forEach((d) => {
-            classesList.push(d.data() as SchoolClass);
-          });
         }
-      } else {
-        const cSnap = await getDocs(query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)));
-        cSnap.forEach((d) => {
-          classesList.push(d.data() as SchoolClass);
-        });
       }
       setClasses(classesList);
 
@@ -158,6 +157,18 @@ export const ClassesPage: React.FC = () => {
       });
 
       await setDoc(classDocRef, payload, { merge: true });
+
+      // Ensure assigning a Class Teacher also activates class access on their teacher profile
+      if (classTeacherId) {
+        try {
+          await updateDoc(doc(db, 'teachers', classTeacherId), {
+            assignedClassIds: arrayUnion(cId),
+            updatedAt: serverTimestamp(),
+          });
+        } catch (tSyncErr) {
+          console.warn('Could not sync assignedClassIds for class teacher:', tSyncErr);
+        }
+      }
 
       await logAudit(
         currentUser?.uid || 'admin',

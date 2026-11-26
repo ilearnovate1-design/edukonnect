@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { 
   Menu, X, Bell, LogOut, User, GraduationCap, ChevronDown, ShieldCheck,
-  Building2, Check, ArrowRight
+  Building2, Check, ArrowRight, Briefcase
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
@@ -32,7 +32,8 @@ export const Navbar: React.FC<NavbarProps> = ({
     switchSchoolMembership,
     activeMembership 
   } = useAuth();
-  const { settings, notifications, unreadNotificationsCount, markNotificationsAsRead, reloadSettings } = useSchool();
+  const { settings, schoolId, notifications, unreadNotificationsCount, markNotificationsAsRead, reloadSettings } = useSchool();
+  const previewSchoolId = (schoolId && schoolId !== 'default') ? schoolId : (appUser?.schoolId || 'default');
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSchoolModal, setShowSchoolModal] = useState(false);
@@ -176,7 +177,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <div className="text-[11px] text-slate-500 font-medium mt-0.5">
                   <Badge 
                     size="sm"
-                    variant={appUser?.role === 'ADMIN' ? 'purple' : appUser?.role === 'TEACHER' ? 'info' : 'success'}
+                    variant={
+                      appUser?.role === 'ADMIN' || appUser?.role === 'SUPER_ADMIN'
+                        ? 'purple'
+                        : appUser?.role === 'TEACHER'
+                        ? 'info'
+                        : 'success'
+                    }
                   >
                     {appUser?.role || 'Guest'}
                   </Badge>
@@ -212,26 +219,67 @@ export const Navbar: React.FC<NavbarProps> = ({
                       type="button"
                       onClick={async () => {
                         setShowUserMenu(false);
-                        await switchToRole('ADMIN', appUser.schoolId);
+                        await switchToRole('ADMIN', previewSchoolId);
                         onNavigate('dashboard');
                       }}
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 rounded-lg text-left cursor-pointer"
+                      className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs rounded-lg text-left cursor-pointer ${
+                        appUser.role === 'ADMIN' ? 'bg-emerald-50 text-emerald-900 font-semibold' : 'text-slate-700 hover:bg-slate-50'
+                      }`}
                     >
-                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      Admin View
+                      <span className="flex items-center gap-2">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        Admin View
+                      </span>
+                      {appUser.role === 'ADMIN' && <Check className="w-3.5 h-3.5 text-emerald-600" />}
                     </button>
                     <button
                       type="button"
                       onClick={async () => {
                         setShowUserMenu(false);
-                        await switchToRole('PARENT', appUser.schoolId);
+                        await switchToRole('TEACHER', previewSchoolId);
                         onNavigate('dashboard');
                       }}
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 rounded-lg text-left cursor-pointer"
+                      className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs rounded-lg text-left cursor-pointer ${
+                        appUser.role === 'TEACHER' ? 'bg-blue-50 text-blue-900 font-semibold' : 'text-slate-700 hover:bg-slate-50'
+                      }`}
                     >
-                      <User className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-                      Parent View
+                      <span className="flex items-center gap-2">
+                        <Briefcase className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                        Teacher View
+                      </span>
+                      {appUser.role === 'TEACHER' && <Check className="w-3.5 h-3.5 text-blue-600" />}
                     </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setShowUserMenu(false);
+                        await switchToRole('PARENT', previewSchoolId);
+                        onNavigate('dashboard');
+                      }}
+                      className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs rounded-lg text-left cursor-pointer ${
+                        appUser.role === 'PARENT' ? 'bg-teal-50 text-teal-900 font-semibold' : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <User className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                        Parent View
+                      </span>
+                      {appUser.role === 'PARENT' && <Check className="w-3.5 h-3.5 text-teal-600" />}
+                    </button>
+                    {appUser.role !== 'SUPER_ADMIN' && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setShowUserMenu(false);
+                          await switchToRole('SUPER_ADMIN', 'default');
+                          onNavigate('superadmin');
+                        }}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 mt-0.5 text-xs text-purple-700 hover:bg-purple-50 rounded-lg text-left font-semibold cursor-pointer"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                        Exit to SuperAdmin
+                      </button>
+                    )}
                   </div>
                 )}
 

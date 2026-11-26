@@ -46,21 +46,22 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigate }
         const today = getTodayDateString();
 
         // 1. Fetch Assigned Classes strictly for current tenant
-        let classIds = currentTeacher?.assignedClassIds || [];
+        const classIds = currentTeacher?.assignedClassIds || [];
         const classesSnap = await getDocs(query(collection(db, 'classes'), where('schoolId', '==', cleanSchool)));
         const allClasses: SchoolClass[] = [];
         classesSnap.forEach((doc) => {
           const c = doc.data() as SchoolClass;
-          allClasses.push(c);
+          allClasses.push({ ...c, classId: c.classId || doc.id });
         });
 
         let relevantClasses: SchoolClass[] = [];
-        if (classIds.length > 0) {
-          relevantClasses = allClasses.filter((c) => classIds.includes(c.classId));
-        } else if (currentTeacher?.teacherId) {
-          relevantClasses = allClasses.filter((c) => c.classTeacherId === currentTeacher.teacherId);
-        } else {
-          relevantClasses = allClasses;
+        if (currentTeacher) {
+          relevantClasses = allClasses.filter(
+            (c) =>
+              classIds.includes(c.classId) ||
+              (!!currentTeacher.teacherId && c.classTeacherId === currentTeacher.teacherId) ||
+              (!!currentTeacher.userId && c.classTeacherId === currentTeacher.userId)
+          );
         }
         setAssignedClasses(relevantClasses);
 

@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { Navbar } from './Navbar';
 import { Sidebar } from './Sidebar';
 import { BottomNav } from './BottomNav';
+import { SuperAdminPreviewBar } from '../preview/SuperAdminPreviewBar';
 import { useSchool } from '../../contexts/SchoolContext';
 import { getPageIdFromPath, getPageTitleFromPath } from '../../routes/routes';
 
@@ -49,6 +50,7 @@ export const AppShell: React.FC<AppShellProps> = ({
         />
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+          <SuperAdminPreviewBar onNavigate={onNavigate} />
           {children}
         </main>
       </div>

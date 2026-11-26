@@ -167,10 +167,17 @@ export const AssignmentsPage: React.FC = () => {
       });
 
       if (role === 'TEACHER') {
-        const assignedIds = currentTeacher?.assignedClassIds || [];
-        cList = cList.filter(
-          (c) => assignedIds.includes(c.classId) || c.classTeacherId === currentTeacher?.teacherId
-        );
+        if (!currentTeacher) {
+          cList = [];
+        } else {
+          const assignedIds = currentTeacher.assignedClassIds || [];
+          cList = cList.filter(
+            (c) =>
+              assignedIds.includes(c.classId) ||
+              (!!currentTeacher.teacherId && c.classTeacherId === currentTeacher.teacherId) ||
+              (!!currentTeacher.userId && c.classTeacherId === currentTeacher.userId)
+          );
+        }
       } else if (role === 'PARENT') {
         cList = cList.filter((c) => parentChildClassIds.has(c.classId));
       }
@@ -194,10 +201,18 @@ export const AssignmentsPage: React.FC = () => {
       });
 
       if (role === 'TEACHER') {
-        const assignedIds = new Set(currentTeacher?.assignedClassIds || []);
-        aList = aList.filter(
-          (a) => assignedIds.has(a.classId) || a.teacherId === currentUser?.uid
-        );
+        if (!currentTeacher) {
+          aList = [];
+        } else {
+          const assignedIds = new Set(currentTeacher.assignedClassIds || []);
+          aList = aList.filter(
+            (a) =>
+              assignedIds.has(a.classId) ||
+              a.teacherId === currentTeacher.teacherId ||
+              (!!currentTeacher.userId && a.teacherId === currentTeacher.userId) ||
+              a.teacherId === currentUser?.uid
+          );
+        }
       } else if (role === 'PARENT') {
         aList = aList.filter(
           (a) => parentChildClassIds.has(a.classId) && a.status === 'PUBLISHED'

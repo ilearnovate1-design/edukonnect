@@ -938,6 +938,53 @@ assert(
   'R13. ResultsPage executeSaveResults uses single-document setDoc writes instead of monolithic writeBatch'
 );
 
+// R14: SuperAdmin Teacher View preview evaluates previewed teacher's class/subject/lock scope cleanly
+const superAdminPreviewAuthorized = evaluateReportConditionsSync({
+  authUid: 'superadmin_uid_1',
+  authEmail: 'ilearnovate1@gmail.com',
+  role: 'TEACHER',
+  isSuperAdmin: true,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'SUBMITTED',
+  existingResults: [{ status: 'DRAFT', isLocked: false, teacherId: authTeacherA.uid }],
+});
+const superAdminPreviewWrongSubject = evaluateReportConditionsSync({
+  authUid: 'superadmin_uid_1',
+  authEmail: 'ilearnovate1@gmail.com',
+  role: 'TEACHER',
+  isSuperAdmin: true,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  teacherProfile: liveTeacherA,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectEng,
+  targetStatus: 'DRAFT',
+});
+const superAdminPreviewNoTeacher = evaluateReportConditionsSync({
+  authUid: 'superadmin_uid_1',
+  authEmail: 'ilearnovate1@gmail.com',
+  role: 'TEACHER',
+  isSuperAdmin: true,
+  isAtLeastAdmin: false,
+  verifiedSchoolId: 'school-a',
+  teacherProfile: null,
+  selectedClass: liveClassA,
+  selectedSubject: liveSubjectMath,
+  targetStatus: 'DRAFT',
+});
+assert(
+  superAdminPreviewAuthorized.authorized === true &&
+    superAdminPreviewWrongSubject.authorized === false &&
+    superAdminPreviewWrongSubject.diagnosticCode === 'SUBJECT_ASSIGNMENT_MISSING' &&
+    superAdminPreviewNoTeacher.authorized === false &&
+    superAdminPreviewNoTeacher.userMessage.includes('SuperAdmin Preview'),
+  'R14. SuperAdmin Teacher View preview accurately evaluates previewed teacher permissions and handles missing teacher selection'
+);
+
 console.log('\n========================================');
 console.log(`PHASE 6 TEST RESULTS: ${passed} PASSED, ${failed} FAILED`);
 console.log('========================================');

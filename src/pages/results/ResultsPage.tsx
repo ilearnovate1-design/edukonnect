@@ -146,6 +146,11 @@ export const ResultsPage: React.FC = () => {
     return subjects.find(s => s.subjectId === selectedSubjectId) || null;
   }, [subjects, selectedSubjectId]);
 
+  const effectivePreviewUid =
+    isSuperAdmin && role === 'TEACHER' && currentTeacher?.userId
+      ? currentTeacher.userId
+      : currentUser?.uid;
+
   const isRowLockedForCurrentUser = (draft?: StudentScoreDraft): boolean => {
     if (isAtLeastAdmin) return false;
     if (!draft) return false;
@@ -154,7 +159,7 @@ export const ResultsPage: React.FC = () => {
       : ({ status: draft.status } as Partial<Result>);
     return isResultRecordLocked(
       candidate,
-      currentUser?.uid,
+      effectivePreviewUid,
       currentTeacher?.teacherId,
       isAtLeastAdmin
     ).locked;
@@ -193,10 +198,17 @@ export const ResultsPage: React.FC = () => {
         });
 
         if (role === 'TEACHER') {
-          const assignedIds = currentTeacher?.assignedClassIds || [];
-          cList = cList.filter(
-            (c) => assignedIds.includes(c.classId) || c.classTeacherId === currentTeacher?.teacherId
-          );
+          if (!currentTeacher) {
+            cList = [];
+          } else {
+            const assignedIds = currentTeacher.assignedClassIds || [];
+            cList = cList.filter(
+              (c) =>
+                assignedIds.includes(c.classId) ||
+                (!!currentTeacher.teacherId && c.classTeacherId === currentTeacher.teacherId) ||
+                (!!currentTeacher.userId && c.classTeacherId === currentTeacher.userId)
+            );
+          }
         }
 
         setClasses(cList);
@@ -635,7 +647,7 @@ export const ResultsPage: React.FC = () => {
         const serverLockInfo = serverExisting
           ? isResultRecordLocked(
               serverExisting,
-              currentUser.uid,
+              effectivePreviewUid || currentUser.uid,
               effectiveTeacherDocId,
               isAtLeastAdmin
             )
@@ -682,6 +694,8 @@ export const ResultsPage: React.FC = () => {
         // Teachers always normalize teacherId to their verified auth UID so rules ownership passes cleanly
         const ownerUid = isAtLeastAdmin
           ? (effectiveOriginal?.teacherId || currentUser.uid)
+          : isSuperAdmin
+          ? (effectiveOriginal?.teacherId || currentTeacher?.userId || currentTeacher?.teacherId || currentUser.uid)
           : currentUser.uid;
 
         // Preserve exact immutable keys on existing docs so Firestore Rules equality never trips
@@ -849,6 +863,8 @@ export const ResultsPage: React.FC = () => {
                 isLocked: willLock,
                 teacherId: isAtLeastAdmin
                   ? (mergedOriginal?.teacherId || currentUser.uid)
+                  : isSuperAdmin
+                  ? (mergedOriginal?.teacherId || currentTeacher?.userId || currentTeacher?.teacherId || currentUser.uid)
                   : currentUser.uid,
                 createdAt: mergedOriginal?.createdAt || null,
                 updatedAt: null,
@@ -1197,6 +1213,16 @@ export const ResultsPage: React.FC = () => {
           </div>
         </CardBody>
       </Card>
+
+      {/* SuperAdmin Teacher View helper notice when no teacher profile is active */}
+      {isSuperAdmin && role === 'TEACHER' && !currentTeacher && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 text-amber-700" />
+          <span>
+            No teacher profile is currently selected. Choose a teacher in the <strong>SuperAdmin Preview</strong> bar above to inspect their assigned classes, subjects, and report submission workflow.
+          </span>
+        </div>
+      )}
 
       {/* Messages */}
       {successMsg && (

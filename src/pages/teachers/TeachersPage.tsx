@@ -10,16 +10,22 @@ import { Card } from '../../components/common/Card';
 import { Modal } from '../../components/common/Modal';
 import { 
   Plus, Search, Edit2, Trash2, Phone, Mail, BookOpen, Layers, Briefcase,
-  Send, KeyRound, Copy, Check, Clock, UserCheck, UserX, ShieldCheck
+  Send, KeyRound, Copy, Check, Clock, UserCheck, UserX, ShieldCheck, Eye, Zap, CheckCircle2
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
 import { createTeacherInvitation, getSchoolInvitations, revokeInvitation } from '../../services/invitationService';
+import { activateAllSchoolTeachersReportAccess } from '../../services/teacherActivationService';
+import { TeacherAccessInspector } from '../../components/preview/TeacherAccessInspector';
 
-export const TeachersPage: React.FC = () => {
-  const { role, currentUser, appUser, isSuperAdmin } = useAuth();
+interface TeachersPageProps {
+  onNavigate?: (page: string) => void;
+}
+
+export const TeachersPage: React.FC<TeachersPageProps> = ({ onNavigate }) => {
+  const { role, currentUser, appUser, isSuperAdmin, isAtLeastAdmin, switchToRole } = useAuth();
   const { schoolId, settings } = useSchool();
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [invitations, setInvitations] = useState<AccountInvitation[]>([]);
@@ -28,6 +34,9 @@ export const TeachersPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'teachers' | 'invitations'>('teachers');
+  const [inspectingTeacher, setInspectingTeacher] = useState<Teacher | null>(null);
+  const [activatingAllReports, setActivatingAllReports] = useState(false);
+  const [reportAccessBanner, setReportAccessBanner] = useState('');
 
   // Add/Edit Modal
   const [showModal, setShowModal] = useState(false);
@@ -353,7 +362,28 @@ export const TeachersPage: React.FC = () => {
         }
       }
 
-      // If user ID was not assigned yet, check if a user document exists with this email
+      // If user ID was not assigned yet, check memberships & users matching this email
+      if (!resolvedUserId) {
+        try {
+          const mSnap = await getDocs(
+            query(
+              collection(db, 'memberships'),
+              where('schoolId', '==', normalizedSchoolId),
+              where('userEmail', '==', normalizedEmail)
+            )
+          );
+          mSnap.forEach((d) => {
+            const md = d.data() as any;
+            if (!resolvedUserId && typeof md.userId === 'string' && md.userId.trim()) {
+              resolvedUserId = md.userId.trim();
+              payload.userId = resolvedUserId;
+            }
+          });
+        } catch (mLookupErr) {
+          console.warn('Membership email lookup notice:', mLookupErr);
+        }
+      }
+
       if (!resolvedUserId) {
         try {
           const uSnap = await getDocs(
@@ -369,6 +399,23 @@ export const TeachersPage: React.FC = () => {
           }
         } catch (lookupErr) {
           console.warn('User lookup notice:', lookupErr);
+        }
+      }
+
+      if (!resolvedUserId && isSuperAdmin) {
+        try {
+          const gSnap = await getDocs(
+            query(collection(db, 'users'), where('email', '==', normalizedEmail))
+          );
+          gSnap.forEach((d) => {
+            const ud = d.data() as any;
+            if (!resolvedUserId && ud.role !== 'SUPER_ADMIN' && !ud.isSuperAdmin) {
+              resolvedUserId = d.id;
+              payload.userId = resolvedUserId;
+            }
+          });
+        } catch (gErr) {
+          console.warn('SuperAdmin email lookup notice:', gErr);
         }
       }
 
@@ -497,8 +544,52 @@ export const TeachersPage: React.FC = () => {
           </p>
         </div>
 
-        {role === 'ADMIN' && (
-          <div className="flex items-center gap-2">
+        {isAtLeastAdmin && (
+          <div className="flex flex-wrap items-center gap-2">
+            {teachers.length > 0 && (
+              <Button
+                variant="outline"
+                isLoading={activatingAllReports}
+                onClick={async () => {
+                  const targetSchool = (
+                    (schoolId && schoolId !== 'default' ? schoolId : appUser?.schoolId) || ''
+                  )
+                    .trim()
+                    .toLowerCase();
+                  if (!targetSchool) return;
+                  setActivatingAllReports(true);
+                  setReportAccessBanner('');
+                  try {
+                    const summary = await activateAllSchoolTeachersReportAccess({
+                      schoolId: targetSchool,
+                      schoolName: settings.schoolName,
+                      teachers,
+                      classes,
+                      actingAdminUid: currentUser?.uid,
+                      isSuperAdmin,
+                    });
+                    setTeachers(summary.updatedTeachers);
+                    const notes: string[] = [
+                      `${summary.activatedCount} teacher(s) ready to Save Drafts & Submit Term Reports.`,
+                    ];
+                    if (summary.pendingSignInCount > 0) {
+                      notes.push(`${summary.pendingSignInCount} pending first sign-in / invite activation.`);
+                    }
+                    if (summary.unassignedClassCount > 0) {
+                      notes.push(`${summary.unassignedClassCount} still need a class assigned.`);
+                    }
+                    setReportAccessBanner(notes.join(' '));
+                  } catch (actErr: any) {
+                    alert(actErr?.message || 'Failed to activate teacher report permissions.');
+                  } finally {
+                    setActivatingAllReports(false);
+                  }
+                }}
+                leftIcon={<Zap className="w-4 h-4 text-emerald-700" />}
+              >
+                Activate Report Access
+              </Button>
+            )}
             <Button
               variant="primary"
               onClick={openInviteModal}
@@ -516,6 +607,22 @@ export const TeachersPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {reportAccessBanner && (
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-medium flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+            <span>{reportAccessBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setReportAccessBanner('')}
+            className="text-emerald-700 hover:underline font-semibold cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Tab Switcher: Teachers vs Invitations */}
       <div className="flex items-center gap-2 border-b border-slate-200">
@@ -634,8 +741,38 @@ export const TeachersPage: React.FC = () => {
                       </div>
                     </div>
 
-                    {role === 'ADMIN' && (
-                      <div className="shrink-0 flex items-center gap-2">
+                    {isAtLeastAdmin && (
+                      <div className="shrink-0 flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setInspectingTeacher(teacher)}
+                          title="Inspect Teacher Access & Permissions"
+                          leftIcon={<ShieldCheck className="w-3.5 h-3.5 text-blue-600" />}
+                        >
+                          Permissions
+                        </Button>
+                        {isSuperAdmin && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={async () => {
+                              const targetSchool = (
+                                teacher.schoolId ||
+                                (schoolId && schoolId !== 'default' ? schoolId : appUser?.schoolId) ||
+                                'default'
+                              )
+                                .trim()
+                                .toLowerCase();
+                              await switchToRole('TEACHER', targetSchool, teacher);
+                              onNavigate?.('dashboard');
+                            }}
+                            title="Preview Teacher Portal as this teacher"
+                            leftIcon={<Eye className="w-3.5 h-3.5 text-indigo-600" />}
+                          >
+                            Teacher View
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant="outline"
@@ -679,7 +816,7 @@ export const TeachersPage: React.FC = () => {
                 Track pending, activated, and revoked teacher invitations
               </p>
             </div>
-            {role === 'ADMIN' && (
+            {isAtLeastAdmin && (
               <Button size="sm" variant="primary" onClick={openInviteModal} leftIcon={<Send className="w-3.5 h-3.5" />}>
                 New Invitation
               </Button>
@@ -1110,6 +1247,64 @@ export const TeachersPage: React.FC = () => {
               </Button>
             </div>
           </form>
+        )}
+      </Modal>
+
+      {/* Teacher Access & Permissions Inspector Modal */}
+      <Modal
+        isOpen={!!inspectingTeacher}
+        onClose={() => setInspectingTeacher(null)}
+        title={
+          inspectingTeacher
+            ? `Access & Permissions • ${inspectingTeacher.firstName} ${inspectingTeacher.lastName}`
+            : 'Teacher Access & Permissions'
+        }
+        subtitle="Effective school membership, assigned classes/subjects, and portal capabilities"
+        maxWidth="lg"
+      >
+        {inspectingTeacher && (
+          <div className="space-y-4">
+            <TeacherAccessInspector
+              teacher={inspectingTeacher}
+              schoolId={(inspectingTeacher.schoolId || schoolId || appUser?.schoolId || '').trim().toLowerCase()}
+              schoolName={settings.schoolName}
+              classes={classes}
+              subjects={subjects}
+              onTeacherUpdated={(updated) => {
+                setInspectingTeacher(updated);
+                setTeachers((prev) =>
+                  prev.map((t) => (t.teacherId === updated.teacherId ? updated : t))
+                );
+              }}
+            />
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <Button variant="outline" size="sm" onClick={() => setInspectingTeacher(null)}>
+                Close
+              </Button>
+              {isSuperAdmin && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  leftIcon={<Eye className="w-4 h-4" />}
+                  onClick={async () => {
+                    const targetTeacher = inspectingTeacher;
+                    const targetSchool = (
+                      targetTeacher.schoolId ||
+                      (schoolId && schoolId !== 'default' ? schoolId : appUser?.schoolId) ||
+                      'default'
+                    )
+                      .trim()
+                      .toLowerCase();
+                    setInspectingTeacher(null);
+                    await switchToRole('TEACHER', targetSchool, targetTeacher);
+                    onNavigate?.('dashboard');
+                  }}
+                >
+                  Open Teacher View as {inspectingTeacher.firstName}
+                </Button>
+              )}
+            </div>
+          </div>
         )}
       </Modal>
     </div>

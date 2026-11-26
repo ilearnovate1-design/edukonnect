@@ -21,6 +21,7 @@ interface AuthContextType {
   schoolId: string;
   isSuperAdmin: boolean;
   isAtLeastAdmin: boolean;
+  isPreviewMode: boolean;
   loading: boolean;
   currentParent: Parent | null;
   currentTeacher: Teacher | null;
@@ -33,7 +34,8 @@ interface AuthContextType {
   resetPassword: (email: string) => Promise<void>;
   updateUserPassword: (currentPass: string, newPass: string) => Promise<void>;
   refreshUserProfile: () => Promise<void>;
-  switchToRole: (newRole: UserRole, targetSchoolId?: string) => Promise<void>;
+  switchToRole: (newRole: UserRole, targetSchoolId?: string, previewTeacher?: Teacher | null) => Promise<void>;
+  setPreviewTeacher: (teacher: Teacher | null) => void;
   switchSchoolMembership: (schoolId: string) => Promise<void>;
 }
 
@@ -526,7 +528,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   /**
    * Simulation role switch (SUPER_ADMIN only)
    */
-  const switchToRole = async (newRole: UserRole, targetSchoolId?: string) => {
+  const switchToRole = async (
+    newRole: UserRole,
+    targetSchoolId?: string,
+    previewTeacher?: Teacher | null
+  ) => {
     if (!currentUser || !appUser) return;
 
     if (!appUser.isSuperAdmin && appUser.role !== 'SUPER_ADMIN') {
@@ -534,14 +540,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    if (newRole === 'TEACHER') {
+      if (previewTeacher !== undefined) {
+        setCurrentTeacher(previewTeacher);
+      }
+      setCurrentParent(null);
+    } else {
+      setCurrentTeacher(null);
+      setCurrentParent(null);
+    }
+
     setAppUser((prev) => {
       if (!prev) return null;
       return {
         ...prev,
         role: newRole,
-        schoolId: targetSchoolId || prev.schoolId || ''
+        schoolId: targetSchoolId !== undefined ? targetSchoolId : prev.schoolId || ''
       };
     });
+  };
+
+  const setPreviewTeacher = (teacher: Teacher | null) => {
+    if (!appUser?.isSuperAdmin) {
+      console.warn('Unauthorized teacher preview attempt blocked.');
+      return;
+    }
+    setCurrentTeacher(teacher);
   };
 
   useEffect(() => {
@@ -662,7 +686,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role: appUser?.role || null,
         schoolId: appUser?.isSuperAdmin ? (appUser.schoolId || 'default') : (appUser?.schoolId || ''),
         isSuperAdmin: !!appUser?.isSuperAdmin,
-        isAtLeastAdmin: appUser?.role === 'ADMIN' || !!appUser?.isSuperAdmin,
+        isAtLeastAdmin: appUser?.role === 'ADMIN' || appUser?.role === 'SUPER_ADMIN',
+        isPreviewMode: !!appUser?.isSuperAdmin && appUser?.role !== 'SUPER_ADMIN',
         loading,
         currentParent,
         currentTeacher,
@@ -676,6 +701,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateUserPassword,
         refreshUserProfile,
         switchToRole,
+        setPreviewTeacher,
         switchSchoolMembership,
       }}
     >

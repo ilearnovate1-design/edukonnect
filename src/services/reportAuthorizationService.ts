@@ -334,17 +334,24 @@ export function evaluateReportConditionsSync(
     if (!t || t.status === 'INACTIVE') {
       conditions.B = {
         passed: false,
-        detail: !t ? 'Teacher profile document missing.' : 'Teacher profile status is INACTIVE.',
+        detail: !t
+          ? (input.isSuperAdmin
+              ? 'No teacher profile selected in SuperAdmin Teacher View.'
+              : 'Teacher profile document missing.')
+          : 'Teacher profile status is INACTIVE.',
       };
       return fail(
         'B',
         'MEMBERSHIP_MISSING',
-        'Your teaching staff profile is missing or inactive. Please contact your school administrator.',
+        !t && input.isSuperAdmin
+          ? 'No teacher profile is selected in Teacher View. Select a teacher in the SuperAdmin Preview bar above to test teacher report permissions.'
+          : 'Your teaching staff profile is missing or inactive. Please contact your school administrator.',
         `Condition B failed: ${conditions.B.detail}`
       );
     }
 
     const tOwnerMatch =
+      input.isSuperAdmin ||
       t.userId === input.authUid ||
       (authEmail !== '' && normalizeId(t.email) === authEmail);
     if (!tOwnerMatch) {
@@ -359,7 +366,12 @@ export function evaluateReportConditionsSync(
         `Condition B failed: ${conditions.B.detail}`
       );
     }
-    conditions.B = { passed: true, detail: `Active teacher profile (${t.teacherId}) verified.` };
+    conditions.B = {
+      passed: true,
+      detail: input.isSuperAdmin
+        ? `SuperAdmin previewing active teacher profile (${t.teacherId}).`
+        : `Active teacher profile (${t.teacherId}) verified.`,
+    };
 
     // D. Teacher schoolId matches report schoolId
     if (normalizeId(t.schoolId) !== schoolId) {
@@ -412,7 +424,8 @@ export function evaluateReportConditionsSync(
     const t = input.teacherProfile;
     const assignedClasses = Array.isArray(t.assignedClassIds) ? t.assignedClassIds : [];
     const isClassTeacher =
-      input.selectedClass.classTeacherId === t.teacherId ||
+      (!!t.teacherId && input.selectedClass.classTeacherId === t.teacherId) ||
+      (!!t.userId && input.selectedClass.classTeacherId === t.userId) ||
       (!!input.authUid && input.selectedClass.classTeacherId === input.authUid);
     const classAuthorized = assignedClasses.includes(input.selectedClass.classId) || isClassTeacher;
 
@@ -490,13 +503,17 @@ export function evaluateReportConditionsSync(
   }
 
   // H & I. Report lock / editability checks
+  const effectiveOwnerUid =
+    input.isSuperAdmin && input.teacherProfile?.userId
+      ? input.teacherProfile.userId
+      : input.authUid;
   const rows = input.existingResults || [];
   if (rows.length > 0) {
     const unlockedRows = rows.filter(
       (r) =>
         !isResultRecordLocked(
           r,
-          input.authUid,
+          effectiveOwnerUid,
           input.teacherProfile?.teacherId,
           input.isAtLeastAdmin
         ).locked
@@ -505,7 +522,7 @@ export function evaluateReportConditionsSync(
     if (unlockedRows.length === 0) {
       const firstLock = isResultRecordLocked(
         rows[0],
-        input.authUid,
+        effectiveOwnerUid,
         input.teacherProfile?.teacherId,
         input.isAtLeastAdmin
       );
@@ -758,7 +775,7 @@ export async function verifyAndEvaluateReportAuthorization(
 
   if (!evaluation.authorized) {
     if (isDevEnv()) {
-      console.error('[ReportAuthDiagnostic] Pre-flight check denied:', {
+      console.warn('[ReportAuthDiagnostic] Pre-flight check denied:', {
         diagnosticCode: evaluation.diagnosticCode,
         failedCondition: evaluation.failedCondition,
         devMessage: evaluation.devMessage,

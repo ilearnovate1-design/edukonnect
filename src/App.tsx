@@ -382,7 +382,7 @@ export default function App() {
       {/* 8. Teachers Directory (Admin Only) */}
       {currentPage === 'teachers' && (
         isAtLeastAdmin ? (
-          <TeachersPage />
+          <TeachersPage onNavigate={setCurrentPage} />
         ) : (
           <div className="p-8 text-center max-w-md mx-auto bg-white rounded-2xl border border-slate-200 mt-8 shadow-sm">
             <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>

@@ -59,10 +59,17 @@ export const AttendancePage: React.FC = () => {
         });
 
         if (role === 'TEACHER') {
-          const assignedIds = currentTeacher?.assignedClassIds || [];
-          cList = cList.filter(
-            (c) => assignedIds.includes(c.classId) || c.classTeacherId === currentTeacher?.teacherId
-          );
+          if (!currentTeacher) {
+            cList = [];
+          } else {
+            const assignedIds = currentTeacher.assignedClassIds || [];
+            cList = cList.filter(
+              (c) =>
+                assignedIds.includes(c.classId) ||
+                (!!currentTeacher.teacherId && c.classTeacherId === currentTeacher.teacherId) ||
+                (!!currentTeacher.userId && c.classTeacherId === currentTeacher.userId)
+            );
+          }
         }
 
         setClasses(cList);
@@ -230,7 +237,15 @@ export const AttendancePage: React.FC = () => {
     }
     if (role === 'TEACHER') {
       const assignedIds = currentTeacher?.assignedClassIds || [];
-      const isAuthorized = assignedIds.includes(selectedClassId) || classes.some(c => c.classId === selectedClassId && c.classTeacherId === currentTeacher?.teacherId);
+      const isAuthorized =
+        !!currentTeacher &&
+        (assignedIds.includes(selectedClassId) ||
+          classes.some(
+            (c) =>
+              c.classId === selectedClassId &&
+              ((!!currentTeacher.teacherId && c.classTeacherId === currentTeacher.teacherId) ||
+                (!!currentTeacher.userId && c.classTeacherId === currentTeacher.userId))
+          ));
       if (!isAuthorized) {
         setErrorMessage('Security Violation: You are not authorized to record attendance for this class.');
         return;
