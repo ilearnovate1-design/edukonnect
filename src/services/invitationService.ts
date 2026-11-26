@@ -342,6 +342,12 @@ export async function acceptAndActivateInvitation(params: {
   const invitation = check.invitation;
   const targetSchoolId = invitation.schoolId.toLowerCase().trim();
   const cleanEmail = userEmail.toLowerCase().trim();
+  const invitedEmail = (invitation.email || '').toLowerCase().trim();
+  if (!cleanEmail || (invitedEmail && cleanEmail !== invitedEmail)) {
+    throw new Error(
+      `This invitation was issued for ${invitation.email}. Please sign in with that exact email address to activate it.`
+    );
+  }
 
   const batch = writeBatch(db);
 
@@ -354,15 +360,16 @@ export async function acceptAndActivateInvitation(params: {
     updatedAt: serverTimestamp(),
   });
 
-  // 2. Create explicit SchoolMembership record
+  // 2. Create or verify SchoolMembership record
   const membershipId = `${targetSchoolId}_${userUid}`;
   const membershipRef = doc(db, 'memberships', membershipId);
+  const existingMemSnap = await getDoc(membershipRef);
   const membership: SchoolMembership = {
     id: membershipId,
     userId: userUid,
     userEmail: cleanEmail,
     schoolId: targetSchoolId,
-    schoolName: invitation.schoolName,
+    schoolName: invitation.schoolName || 'EduKonnect School',
     role: invitation.role,
     status: 'ACTIVE',
     invitationId: invitation.id,
@@ -385,14 +392,17 @@ export async function acceptAndActivateInvitation(params: {
     const tSnap = await getDocs(tQuery);
     if (!tSnap.empty) {
       const tDoc = tSnap.docs[0];
+      const tData = tDoc.data() as Teacher;
       linkedTeacherId = tDoc.id;
-      batch.update(tDoc.ref, {
-        userId: userUid,
-        status: 'ACTIVE',
-        updatedAt: serverTimestamp(),
-      });
+      if (tData.userId !== userUid || tData.status !== 'ACTIVE') {
+        batch.update(tDoc.ref, {
+          userId: userUid,
+          status: 'ACTIVE',
+          updatedAt: serverTimestamp(),
+        });
+      }
     } else {
-      // Create new teacher record
+      // Create new teacher record (requires admin permission if not pre-staged)
       const tRef = doc(collection(db, 'teachers'));
       linkedTeacherId = tRef.id;
       batch.set(tRef, {
@@ -422,11 +432,14 @@ export async function acceptAndActivateInvitation(params: {
     const pSnap = await getDocs(pQuery);
     if (!pSnap.empty) {
       const pDoc = pSnap.docs[0];
+      const pData = pDoc.data() as Parent;
       linkedParentId = pDoc.id;
-      batch.update(pDoc.ref, {
-        userId: userUid,
-        updatedAt: serverTimestamp(),
-      });
+      if (pData.userId !== userUid) {
+        batch.update(pDoc.ref, {
+          userId: userUid,
+          updatedAt: serverTimestamp(),
+        });
+      }
     } else {
       const pRef = doc(collection(db, 'parents'));
       linkedParentId = pRef.id;
@@ -465,31 +478,138 @@ export async function acceptAndActivateInvitation(params: {
     }
   }
 
-  batch.set(membershipRef, membership);
+  // Handle pre-existing memberships (e.g. auto-synced during signup/login fetchProfile)
+  // without violating Firestore self-heal update rules on memberships/{membershipId}.
+  if (!existingMemSnap.exists()) {
+    batch.set(membershipRef, membership);
+  } else {
+    const existingData = existingMemSnap.data() as Partial<SchoolMembership>;
+    if (existingData.status && existingData.status !== 'ACTIVE') {
+      throw new Error(
+        'Your membership for this school is currently inactive or suspended. Please contact your school administrator.'
+      );
+    }
+    if (invitation.role === 'TEACHER') {
+      if (existingData.userId !== userUid || (linkedTeacherId && existingData.teacherId !== linkedTeacherId)) {
+        batch.update(membershipRef, {
+          userId: userUid,
+          ...(linkedTeacherId ? { teacherId: linkedTeacherId } : {}),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } else if (invitation.role === 'PARENT') {
+      if (existingData.userId !== userUid || (linkedParentId && existingData.parentId !== linkedParentId)) {
+        batch.update(membershipRef, {
+          userId: userUid,
+          ...(linkedParentId ? { parentId: linkedParentId } : {}),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+  }
 
-  // 4. Update the user document to lock to target school and role
+  // 4. Update the user document to lock to target school and role (never pass undefined fields)
   const userRef = doc(db, 'users', userUid);
+  const resolvedDisplayName =
+    displayName?.trim() ||
+    (invitation.role === 'TEACHER'
+      ? `${invitation.teacherData?.firstName || ''} ${invitation.teacherData?.lastName || ''}`.trim()
+      : `${invitation.parentData?.firstName || ''} ${invitation.parentData?.lastName || ''}`.trim()) ||
+    cleanEmail;
+
   const updatedUserDoc: Partial<AppUser> = {
     uid: userUid,
     email: cleanEmail,
-    displayName: displayName || (invitation.role === 'TEACHER' 
-      ? `${invitation.teacherData?.firstName || ''} ${invitation.teacherData?.lastName || ''}`.trim()
-      : `${invitation.parentData?.firstName || ''} ${invitation.parentData?.lastName || ''}`.trim()
-    ),
+    displayName: resolvedDisplayName,
     role: invitation.role,
     schoolId: targetSchoolId,
     approvalStatus: 'APPROVED',
     active: true,
-    teacherId: linkedTeacherId,
-    parentId: linkedParentId,
-    assignedClassIds: invitation.teacherData?.assignedClassIds || [],
     updatedAt: serverTimestamp(),
   };
+
+  if (linkedTeacherId) {
+    updatedUserDoc.teacherId = linkedTeacherId;
+  }
+  if (linkedParentId) {
+    updatedUserDoc.parentId = linkedParentId;
+  }
+  if (invitation.role === 'TEACHER') {
+    updatedUserDoc.assignedClassIds = invitation.teacherData?.assignedClassIds || [];
+  }
 
   batch.set(userRef, updatedUserDoc, { merge: true });
 
   await batch.commit();
   return { success: true, schoolId: targetSchoolId, role: invitation.role };
+}
+
+/**
+ * Reconcile any leftover PENDING invitations for a member whose account/UID
+ * has already been linked or activated by an Admin or SuperAdmin.
+ */
+export async function reconcilePendingInvitationsForMember(params: {
+  schoolId: string;
+  email: string;
+  role?: 'TEACHER' | 'PARENT';
+  acceptedByUid?: string;
+}): Promise<number> {
+  const cleanSchool = (params.schoolId || '').trim().toLowerCase();
+  const cleanEmail = (params.email || '').trim().toLowerCase();
+  if (!cleanSchool || !cleanEmail) return 0;
+
+  const invQuery = query(
+    collection(db, 'invitations'),
+    where('schoolId', '==', cleanSchool),
+    where('email', '==', cleanEmail),
+    where('status', '==', 'PENDING')
+  );
+  const snap = await getDocs(invQuery);
+  if (snap.empty) return 0;
+
+  let reconciledCount = 0;
+  for (const invDoc of snap.docs) {
+    const data = invDoc.data() as AccountInvitation;
+    if (params.role && data.role !== params.role) continue;
+    await updateDoc(invDoc.ref, {
+      status: 'ACCEPTED',
+      acceptedAt: serverTimestamp(),
+      ...(params.acceptedByUid ? { acceptedBy: params.acceptedByUid } : {}),
+      updatedAt: serverTimestamp(),
+    });
+    reconciledCount++;
+  }
+  return reconciledCount;
+}
+
+/**
+ * Allow a school admin or superadmin to manually mark a PENDING invitation
+ * as ACCEPTED once the member's account has already signed in / linked.
+ */
+export async function markInvitationAcceptedByAdmin(params: {
+  invitationId: string;
+  schoolId: string;
+  acceptedByUid?: string;
+}): Promise<void> {
+  const inviteRef = doc(db, 'invitations', params.invitationId);
+  const snap = await getDoc(inviteRef);
+  if (!snap.exists()) {
+    throw new Error('Invitation not found.');
+  }
+
+  const data = snap.data() as AccountInvitation;
+  if (data.schoolId.toLowerCase() !== params.schoolId.toLowerCase()) {
+    throw new Error('Unauthorized to update invitations for another school.');
+  }
+
+  if (data.status === 'ACCEPTED') return;
+
+  await updateDoc(inviteRef, {
+    status: 'ACCEPTED',
+    acceptedAt: serverTimestamp(),
+    ...(params.acceptedByUid ? { acceptedBy: params.acceptedByUid } : {}),
+    updatedAt: serverTimestamp(),
+  });
 }
 
 /**

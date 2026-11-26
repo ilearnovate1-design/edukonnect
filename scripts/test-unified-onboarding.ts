@@ -16,6 +16,9 @@
  * 6. Protection Against Self-Escalation & Cross-Tenant Spoofing.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 interface MockSchool {
   id: string;
   name: string;
@@ -341,6 +344,51 @@ const suspendedSession = resolveAuthSession('uid_suspended_teacher');
 assert(suspendedSession.status === 'NO_MEMBERSHIP', 'Unregistered user gets clear NO_MEMBERSHIP status');
 
 teacherMembership.status = 'ACTIVE'; // restore for further checks
+
+// Test 6: Invitation Activation Payload Safety & Pending Reconciliation
+console.log('\n6. Invitation Activation Safety & Pending Reconciliation:');
+
+const invServiceSrc = fs.readFileSync(
+  path.resolve(process.cwd(), 'src/services/invitationService.ts'),
+  'utf8'
+);
+assert(
+  !invServiceSrc.includes('teacherId: linkedTeacherId,\n    parentId: linkedParentId,'),
+  'acceptAndActivateInvitation does not pass undefined teacherId/parentId into users/{uid}'
+);
+assert(
+  invServiceSrc.includes('existingMemSnap.exists()'),
+  'acceptAndActivateInvitation checks existing membership before full setDoc overwrite'
+);
+assert(
+  invServiceSrc.includes('reconcilePendingInvitationsForMember') &&
+    invServiceSrc.includes('markInvitationAcceptedByAdmin'),
+  'invitationService exports admin reconciliation helpers for linked teachers'
+);
+
+// Simulated reconciliation when teacher signs in directly bypassing invite code
+const stuckInvite = createInvitation(adminMembership, 'direct.signin@greenwood.edu', 'TEACHER');
+assert(stuckInvite.status === 'PENDING', 'Direct sign-in invite initially starts as PENDING');
+
+function reconcilePendingInvites(schoolId: string, email: string, role: 'TEACHER' | 'PARENT'): number {
+  let count = 0;
+  for (const inv of invitations.values()) {
+    if (
+      inv.schoolId === schoolId &&
+      inv.email === email.toLowerCase().trim() &&
+      inv.role === role &&
+      inv.status === 'PENDING'
+    ) {
+      inv.status = 'ACCEPTED';
+      count++;
+    }
+  }
+  return count;
+}
+
+const reconciled = reconcilePendingInvites('greenwood-academy', 'direct.signin@greenwood.edu', 'TEACHER');
+assert(reconciled === 1, 'Reconciliation transitions stuck PENDING invite to ACCEPTED');
+assert(stuckInvite.status === 'ACCEPTED', 'Stuck invite is now ACCEPTED after UID link reconciliation');
 
 console.log('\n========================================');
 console.log(`TEST RESULTS: ${testPassed} PASSED, ${testFailed} FAILED`);

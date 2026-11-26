@@ -11,6 +11,7 @@ import {
 import { db } from './firebase';
 import { SchoolClass, Teacher } from '../types';
 import { provisionAccount } from './provisioningService';
+import { reconcilePendingInvitationsForMember } from './invitationService';
 import { logAudit } from '../utils/formatters';
 
 export interface ActivateTeacherReportResult {
@@ -207,6 +208,17 @@ export async function activateTeacherReportPermissions(params: {
       );
     } catch (uSyncErr) {
       console.warn('User profile sync notice:', uSyncErr);
+    }
+
+    try {
+      await reconcilePendingInvitationsForMember({
+        schoolId: cleanSchool,
+        email: cleanEmail,
+        role: 'TEACHER',
+        acceptedByUid: resolvedUserId,
+      });
+    } catch (invReconcileErr) {
+      console.warn('Invitation reconciliation notice:', invReconcileErr);
     }
   }
 

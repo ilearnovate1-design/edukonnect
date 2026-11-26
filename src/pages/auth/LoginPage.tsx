@@ -282,6 +282,7 @@ export const LoginPage: React.FC<{
       // 1. Create or authenticate user account
       const cleanEmail = verifiedInvite.email.toLowerCase().trim();
       let userUid = currentUser?.uid;
+      let activeEmail = currentUser?.email?.toLowerCase().trim() || cleanEmail;
 
       if (!currentUser) {
         try {
@@ -292,12 +293,28 @@ export const LoginPage: React.FC<{
           );
           const freshUser = (await import('../../services/firebase')).auth.currentUser;
           userUid = freshUser?.uid;
+          activeEmail = freshUser?.email?.toLowerCase().trim() || cleanEmail;
         } catch (authErr: any) {
-          // If account already exists, try logging in
+          // If account already exists, try logging in with the entered password
           if (authErr?.code === 'auth/email-already-in-use') {
-            await login(cleanEmail, invitePassword);
-            const freshUser = (await import('../../services/firebase')).auth.currentUser;
-            userUid = freshUser?.uid;
+            try {
+              await login(cleanEmail, invitePassword);
+              const freshUser = (await import('../../services/firebase')).auth.currentUser;
+              userUid = freshUser?.uid;
+              activeEmail = freshUser?.email?.toLowerCase().trim() || cleanEmail;
+            } catch (loginErr: any) {
+              const code = String(loginErr?.code || loginErr?.message || '');
+              if (
+                code.includes('auth/invalid-credential') ||
+                code.includes('auth/wrong-password') ||
+                code.includes('auth/invalid-login-credentials')
+              ) {
+                throw new Error(
+                  `An account already exists for ${cleanEmail}. Please enter your existing account password above (or use "Forgot password" on the Sign In tab) to activate this invitation.`
+                );
+              }
+              throw loginErr;
+            }
           } else {
             throw authErr;
           }
@@ -312,7 +329,7 @@ export const LoginPage: React.FC<{
       await acceptAndActivateInvitation({
         code: verifiedInvite.id,
         userUid,
-        userEmail: cleanEmail,
+        userEmail: activeEmail,
         displayName: verifiedInvite.role === 'TEACHER'
           ? `${verifiedInvite.teacherData?.firstName} ${verifiedInvite.teacherData?.lastName}`
           : `${verifiedInvite.parentData?.firstName} ${verifiedInvite.parentData?.lastName}`,
@@ -323,7 +340,7 @@ export const LoginPage: React.FC<{
       setSuccessMessage('Invitation activated successfully! Loading your dashboard...');
     } catch (err: any) {
       console.error('Invite activation error:', err);
-      setErrorMessage(parseFirebaseError(err));
+      setErrorMessage(err?.message && !String(err.message).includes('Firebase:') ? err.message : parseFirebaseError(err));
     } finally {
       setIsLoading(false);
     }

@@ -16,7 +16,13 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
 import { logAudit } from '../../utils/formatters';
 import { provisionAccount } from '../../services/provisioningService';
-import { createTeacherInvitation, getSchoolInvitations, revokeInvitation } from '../../services/invitationService';
+import {
+  createTeacherInvitation,
+  getSchoolInvitations,
+  revokeInvitation,
+  reconcilePendingInvitationsForMember,
+  markInvitationAcceptedByAdmin,
+} from '../../services/invitationService';
 import { activateAllSchoolTeachersReportAccess } from '../../services/teacherActivationService';
 import { TeacherAccessInspector } from '../../components/preview/TeacherAccessInspector';
 
@@ -66,6 +72,8 @@ export const TeachersPage: React.FC<TeachersPageProps> = ({ onNavigate }) => {
   const [inviteError, setInviteError] = useState('');
   const [createdInvite, setCreatedInvite] = useState<AccountInvitation | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedInviteAction, setCopiedInviteAction] = useState<{ id: string; type: 'code' | 'link' } | null>(null);
+  const [syncingInviteId, setSyncingInviteId] = useState<string | null>(null);
 
   const matchesTenant = (itemSchoolId?: string) => {
     const cleanSchool = (schoolId || '').trim().toLowerCase();
@@ -457,6 +465,17 @@ export const TeachersPage: React.FC<TeachersPageProps> = ({ onNavigate }) => {
         } catch (syncErr) {
           console.warn('User sync notice:', syncErr);
         }
+
+        try {
+          await reconcilePendingInvitationsForMember({
+            schoolId: normalizedSchoolId,
+            email: normalizedEmail,
+            role: 'TEACHER',
+            acceptedByUid: resolvedUserId,
+          });
+        } catch (reconcileErr) {
+          console.warn('Invitation reconciliation notice:', reconcileErr);
+        }
       }
 
       if (!editingTeacher) {
@@ -569,6 +588,12 @@ export const TeachersPage: React.FC<TeachersPageProps> = ({ onNavigate }) => {
                       isSuperAdmin,
                     });
                     setTeachers(summary.updatedTeachers);
+                    try {
+                      const refreshedInvs = await getSchoolInvitations(targetSchool);
+                      setInvitations(refreshedInvs);
+                    } catch (invErr) {
+                      console.warn('Invitation refresh notice:', invErr);
+                    }
                     const notes: string[] = [
                       `${summary.activatedCount} teacher(s) ready to Save Drafts & Submit Term Reports.`,
                     ];
@@ -837,61 +862,129 @@ export const TeachersPage: React.FC<TeachersPageProps> = ({ onNavigate }) => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {invitations.map((inv) => (
-                    <tr key={inv.id} className="hover:bg-slate-50/50">
-                      <td className="px-5 py-3">
-                        <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
-                          {inv.id}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3">
-                        <div className="font-semibold text-slate-900">
-                          {inv.teacherData?.firstName} {inv.teacherData?.lastName}
-                        </div>
-                        <div className="text-[11px] text-slate-500">{inv.email}</div>
-                      </td>
-                      <td className="px-5 py-3">
-                        <span
-                          className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
-                            inv.status === 'ACCEPTED'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : inv.status === 'REVOKED'
-                              ? 'bg-rose-100 text-rose-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          {inv.status}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 text-xs text-slate-600">
-                        {inv.teacherData?.assignedClassIds?.length || 0} class(es)
-                      </td>
-                      <td className="px-5 py-3 flex items-center gap-2">
-                        {inv.status === 'PENDING' && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                navigator.clipboard.writeText(inv.id);
-                                alert(`Invitation code ${inv.id} copied to clipboard!`);
-                              }}
-                              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded flex items-center gap-1 cursor-pointer"
+                  {invitations.map((inv) => {
+                    const invEmail = (inv.email || '').trim().toLowerCase();
+                    const matchedTeacher = teachers.find(
+                      (t) => (t.email || '').trim().toLowerCase() === invEmail
+                    );
+                    const hasLinkedAccount = !!matchedTeacher?.userId;
+                    const isCodeCopied = copiedInviteAction?.id === inv.id && copiedInviteAction?.type === 'code';
+                    const isLinkCopied = copiedInviteAction?.id === inv.id && copiedInviteAction?.type === 'link';
+
+                    return (
+                      <tr key={inv.id} className="hover:bg-slate-50/50">
+                        <td className="px-5 py-3">
+                          <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
+                            {inv.id}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3">
+                          <div className="font-semibold text-slate-900">
+                            {inv.teacherData?.firstName} {inv.teacherData?.lastName}
+                          </div>
+                          <div className="text-[11px] text-slate-500">{inv.email}</div>
+                        </td>
+                        <td className="px-5 py-3">
+                          <span
+                            className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                              inv.status === 'ACCEPTED'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : inv.status === 'REVOKED'
+                                ? 'bg-rose-100 text-rose-800'
+                                : 'bg-amber-100 text-amber-800'
+                            }`}
+                          >
+                            {inv.status}
+                          </span>
+                          {inv.status === 'PENDING' && (
+                            <div
+                              className={`text-[11px] mt-1 font-medium ${
+                                hasLinkedAccount ? 'text-emerald-700' : 'text-slate-500'
+                              }`}
                             >
-                              <Copy className="w-3 h-3" />
-                              Copy Code
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRevokeInvitation(inv.id)}
-                              className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded cursor-pointer"
-                            >
-                              Revoke
-                            </button>
-                          </>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                              {hasLinkedAccount
+                                ? 'Teacher already signed in (UID linked) — ready to sync'
+                                : 'Awaiting teacher to redeem code & sign in'}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-5 py-3 text-xs text-slate-600">
+                          {inv.teacherData?.assignedClassIds?.length || 0} class(es)
+                        </td>
+                        <td className="px-5 py-3">
+                          {inv.status === 'PENDING' && (
+                            <div className="flex flex-wrap items-center gap-2">
+                              {hasLinkedAccount && (
+                                <button
+                                  type="button"
+                                  disabled={syncingInviteId === inv.id}
+                                  onClick={async () => {
+                                    const targetSchool = (
+                                      inv.schoolId ||
+                                      (schoolId && schoolId !== 'default' ? schoolId : appUser?.schoolId) ||
+                                      ''
+                                    )
+                                      .trim()
+                                      .toLowerCase();
+                                    if (!targetSchool) return;
+                                    setSyncingInviteId(inv.id);
+                                    try {
+                                      await markInvitationAcceptedByAdmin({
+                                        invitationId: inv.id,
+                                        schoolId: targetSchool,
+                                        acceptedByUid: matchedTeacher?.userId || currentUser?.uid,
+                                      });
+                                      await fetchData();
+                                    } catch (syncErr: any) {
+                                      setReportAccessBanner(syncErr?.message || 'Could not sync invitation status.');
+                                    } finally {
+                                      setSyncingInviteId(null);
+                                    }
+                                  }}
+                                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-semibold rounded flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Check className="w-3 h-3" />
+                                  {syncingInviteId === inv.id ? 'Syncing...' : 'Mark Accepted'}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(inv.id);
+                                  setCopiedInviteAction({ id: inv.id, type: 'code' });
+                                  setTimeout(() => setCopiedInviteAction(null), 2000);
+                                }}
+                                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded flex items-center gap-1 cursor-pointer"
+                              >
+                                {isCodeCopied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                                {isCodeCopied ? 'Copied' : 'Copy Code'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const inviteUrl = `${window.location.origin}/?invite=${inv.id}`;
+                                  navigator.clipboard.writeText(inviteUrl);
+                                  setCopiedInviteAction({ id: inv.id, type: 'link' });
+                                  setTimeout(() => setCopiedInviteAction(null), 2000);
+                                }}
+                                className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold rounded flex items-center gap-1 cursor-pointer"
+                              >
+                                {isLinkCopied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                                {isLinkCopied ? 'Link Copied' : 'Copy Link'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRevokeInvitation(inv.id)}
+                                className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded cursor-pointer"
+                              >
+                                Revoke
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1270,11 +1363,26 @@ export const TeachersPage: React.FC<TeachersPageProps> = ({ onNavigate }) => {
               schoolName={settings.schoolName}
               classes={classes}
               subjects={subjects}
-              onTeacherUpdated={(updated) => {
+              onTeacherUpdated={async (updated) => {
                 setInspectingTeacher(updated);
                 setTeachers((prev) =>
                   prev.map((t) => (t.teacherId === updated.teacherId ? updated : t))
                 );
+                const targetSchool = (
+                  updated.schoolId ||
+                  (schoolId && schoolId !== 'default' ? schoolId : appUser?.schoolId) ||
+                  ''
+                )
+                  .trim()
+                  .toLowerCase();
+                if (targetSchool) {
+                  try {
+                    const refreshedInvs = await getSchoolInvitations(targetSchool);
+                    setInvitations(refreshedInvs);
+                  } catch (invErr) {
+                    console.warn('Invitation refresh notice:', invErr);
+                  }
+                }
               }}
             />
             <div className="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-slate-100">
