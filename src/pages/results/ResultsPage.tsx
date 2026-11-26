@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  collection, getDocs, doc, query, where, writeBatch, serverTimestamp 
+  collection, getDocs, doc, query, where, setDoc, serverTimestamp 
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { 
@@ -124,6 +124,8 @@ export const ResultsPage: React.FC = () => {
   const [pendingWriteContext, setPendingWriteContext] = useState<{
     resolvedResultIds?: Map<string, string>;
     liveExistingResultsMap?: Map<string, Partial<Result> & { locked?: boolean }>;
+    verifiedTeacherDocId?: string | null;
+    conditionsSummary?: Record<string, { passed: boolean; detail: string }>;
   } | null>(null);
 
   // CSV Import Modal
@@ -455,28 +457,36 @@ export const ResultsPage: React.FC = () => {
       };
     });
 
-    const { evaluation, resolvedResultIds, liveExistingResultsMap } = await verifyAndEvaluateReportAuthorization({
-      authUid: currentUser?.uid,
-      authEmail: currentUser?.email,
-      role,
-      isSuperAdmin,
-      isAtLeastAdmin,
-      verifiedSchoolId,
-      cachedMembership: activeMembership,
-      cachedTeacher: currentTeacher,
-      selectedClass,
-      selectedSubject,
-      term: selectedTerm,
-      academicSession: selectedSession,
-      targetStatus: statusToSet,
-      existingResults: existingRows,
-      targetResults,
-    });
+    const { evaluation, liveMembership, liveTeacher, resolvedResultIds, liveExistingResultsMap } =
+      await verifyAndEvaluateReportAuthorization({
+        authUid: currentUser?.uid,
+        authEmail: currentUser?.email,
+        role,
+        isSuperAdmin,
+        isAtLeastAdmin,
+        verifiedSchoolId,
+        cachedMembership: activeMembership,
+        cachedTeacher: currentTeacher,
+        selectedClass,
+        selectedSubject,
+        term: selectedTerm,
+        academicSession: selectedSession,
+        targetStatus: statusToSet,
+        existingResults: existingRows,
+        targetResults,
+      });
 
     if (!evaluation.authorized) {
       setErrorMsg(evaluation.userMessage);
       return;
     }
+
+    const dbVerifiedTeacherId =
+      liveTeacher?.teacherId || liveMembership?.teacherId || currentTeacher?.teacherId || null;
+    const conditionsSummary = evaluation.conditions as Record<
+      string,
+      { passed: boolean; detail: string }
+    >;
 
     if (editableStudents.length === 0) {
       const lockCheck = evaluateReportConditionsSync({
@@ -531,12 +541,22 @@ export const ResultsPage: React.FC = () => {
 
     if (hasPublishedChanges) {
       setPendingSaveStatus(statusToSet);
-      setPendingWriteContext({ resolvedResultIds, liveExistingResultsMap });
+      setPendingWriteContext({
+        resolvedResultIds,
+        liveExistingResultsMap,
+        verifiedTeacherDocId: dbVerifiedTeacherId,
+        conditionsSummary,
+      });
       setShowRevisionModal(true);
       return;
     }
 
-    executeSaveResults(statusToSet, undefined, { resolvedResultIds, liveExistingResultsMap });
+    executeSaveResults(statusToSet, undefined, {
+      resolvedResultIds,
+      liveExistingResultsMap,
+      verifiedTeacherDocId: dbVerifiedTeacherId,
+      conditionsSummary,
+    });
   };
 
   const executeSaveResults = async (
@@ -545,6 +565,8 @@ export const ResultsPage: React.FC = () => {
     writeContext?: {
       resolvedResultIds?: Map<string, string>;
       liveExistingResultsMap?: Map<string, Partial<Result> & { locked?: boolean }>;
+      verifiedTeacherDocId?: string | null;
+      conditionsSummary?: Record<string, { passed: boolean; detail: string }>;
     }
   ) => {
     if (!currentUser?.uid || !verifiedSchoolId) {
@@ -566,9 +588,6 @@ export const ResultsPage: React.FC = () => {
     setErrorMsg('');
 
     try {
-      const batch = writeBatch(db);
-      let count = 0;
-
       const profileSnapshot = {
         profileId: activeProfile.profileId,
         name: activeProfile.name,
@@ -584,8 +603,22 @@ export const ResultsPage: React.FC = () => {
       const cleanSession = selectedSession.replace(/[^a-zA-Z0-9]/g, '-');
       const cleanTerm = selectedTerm.replace(/\s+/g, '-');
       const savedResultIds = new Map<string, string>();
+      const effectiveTeacherDocId = writeContext?.verifiedTeacherDocId ?? currentTeacher?.teacherId ?? null;
       const lockedSkippedCount = students.filter((s) => isRowLockedForCurrentUser(scoresMap.get(s.studentId))).length;
       const willLock = statusToSet === 'APPROVED' || statusToSet === 'PUBLISHED';
+
+      interface PreparedResultWrite {
+        studentId: string;
+        resultId: string;
+        docPath: string;
+        operationType: 'CREATE' | 'UPDATE';
+        currentStatus: string;
+        lockStatus: boolean;
+        ref: ReturnType<typeof doc>;
+        payload: Record<string, any>;
+      }
+
+      const writeQueue: PreparedResultWrite[] = [];
 
       students.forEach((s) => {
         const item = scoresMap.get(s.studentId);
@@ -599,15 +632,15 @@ export const ResultsPage: React.FC = () => {
 
         const serverExisting = writeContext?.liveExistingResultsMap?.get(s.studentId);
         const effectiveOriginal = item.originalResult || (serverExisting as Result | undefined);
-        if (
-          serverExisting &&
-          isResultRecordLocked(
-            serverExisting,
-            currentUser.uid,
-            currentTeacher?.teacherId,
-            isAtLeastAdmin
-          ).locked
-        ) {
+        const serverLockInfo = serverExisting
+          ? isResultRecordLocked(
+              serverExisting,
+              currentUser.uid,
+              effectiveTeacherDocId,
+              isAtLeastAdmin
+            )
+          : { locked: false };
+        if (serverLockInfo.locked) {
           return;
         }
 
@@ -651,17 +684,22 @@ export const ResultsPage: React.FC = () => {
           ? (effectiveOriginal?.teacherId || currentUser.uid)
           : currentUser.uid;
 
-        // Preserve exact schoolId casing on existing docs so immutable equality in Firestore Rules never trips
+        // Preserve exact immutable keys on existing docs so Firestore Rules equality never trips
         const docSchoolId = effectiveOriginal?.schoolId || verifiedSchoolId;
+        const docStudentId = effectiveOriginal?.studentId || s.studentId;
+        const docClassId = effectiveOriginal?.classId || selectedClassId;
+        const docSubjectId = effectiveOriginal?.subjectId || selectedSubjectId;
+        const docSession = effectiveOriginal?.academicSession || selectedSession;
+        const docTerm = effectiveOriginal?.term || selectedTerm;
 
         const payload: Record<string, any> = {
           resultId,
           schoolId: docSchoolId,
-          studentId: s.studentId,
-          classId: selectedClassId,
-          subjectId: selectedSubjectId,
-          academicSession: selectedSession,
-          term: selectedTerm,
+          studentId: docStudentId,
+          classId: docClassId,
+          subjectId: docSubjectId,
+          academicSession: docSession,
+          term: docTerm,
           componentScores: item.componentScores,
           caScore,
           examScore,
@@ -706,22 +744,124 @@ export const ResultsPage: React.FC = () => {
           payload.createdAt = effectiveOriginal.createdAt;
         }
 
-        batch.set(ref, payload, { merge: true });
-        savedResultIds.set(s.studentId, resultId);
-        count++;
+        const isUpdate = !!(serverExisting || item.originalResult);
+        writeQueue.push({
+          studentId: s.studentId,
+          resultId,
+          docPath: `results/${resultId}`,
+          operationType: isUpdate ? 'UPDATE' : 'CREATE',
+          currentStatus: effectiveOriginal?.status || item.status || 'NONE',
+          lockStatus: Boolean(effectiveOriginal?.isLocked || (effectiveOriginal as any)?.locked),
+          ref,
+          payload,
+        });
       });
 
+      const count = writeQueue.length;
       if (count === 0) {
         setErrorMsg('No editable student reports were eligible to save.');
         return;
       }
 
-      // Condition K: Execute the primary batch write to /results/{resultId}
-      try {
-        await batch.commit();
-      } catch (writeErr: any) {
+      // Safe DEV-only pre-write diagnostics (no PII, tokens, or student names)
+      if (import.meta.env?.DEV) {
+        console.info('[ReportWriteDiagnostics] Pre-write payload summary:', {
+          authUid: currentUser.uid,
+          role,
+          verifiedSchoolId,
+          classId: selectedClassId,
+          subjectId: selectedSubjectId,
+          requestedStatus: statusToSet,
+          writeMode: 'SINGLE_DOC_SET_MERGE',
+          documentCount: count,
+          authorizationChecks: writeContext?.conditionsSummary || {},
+          operations: writeQueue.map((w) => ({
+            docPath: w.docPath,
+            resultId: w.resultId,
+            reportSchoolId: w.payload.schoolId,
+            classId: w.payload.classId,
+            subjectId: w.payload.subjectId,
+            currentStatus: w.currentStatus,
+            requestedStatus: w.payload.status,
+            lockStatus: w.lockStatus,
+            operationType: w.operationType,
+          })),
+        });
+      }
+
+      // Condition K: Execute single-document writes in small bounded chunks (max 5 concurrent)
+      // so Firestore evaluates each write independently (5 lookups <= 10 single-doc cap) and
+      // never hits the 20-lookup multi-document WriteBatch cap across >= 5 students.
+      const CONCURRENCY = 5;
+      let failedEntry: PreparedResultWrite | null = null;
+      let writeError: unknown = null;
+
+      for (let i = 0; i < writeQueue.length; i += CONCURRENCY) {
+        const chunk = writeQueue.slice(i, i + CONCURRENCY);
+        const settled = await Promise.allSettled(
+          chunk.map(async (entry) => {
+            await setDoc(entry.ref, entry.payload, { merge: true });
+            return entry;
+          })
+        );
+
+        for (let j = 0; j < settled.length; j++) {
+          const outcome = settled[j];
+          const entry = chunk[j];
+          if (outcome.status === 'fulfilled') {
+            savedResultIds.set(entry.studentId, entry.resultId);
+          } else if (!writeError) {
+            failedEntry = entry;
+            writeError = outcome.reason;
+          }
+        }
+
+        if (writeError) break;
+      }
+
+      // Update local state statuses for any rows whose Firestore writes succeeded
+      if (savedResultIds.size > 0) {
+        const updated = new Map<string, StudentScoreDraft>(scoresMap);
+        students.forEach((s) => {
+          const usedResultId = savedResultIds.get(s.studentId);
+          if (!usedResultId) return;
+          const existing = updated.get(s.studentId);
+          if (existing) {
+            const serverOriginal = writeContext?.liveExistingResultsMap?.get(s.studentId);
+            const mergedOriginal = existing.originalResult || (serverOriginal as Result | undefined);
+            updated.set(s.studentId, {
+              ...existing,
+              status: statusToSet,
+              originalResult: {
+                ...(mergedOriginal || {}),
+                resultId: usedResultId,
+                schoolId: mergedOriginal?.schoolId || verifiedSchoolId,
+                studentId: mergedOriginal?.studentId || s.studentId,
+                classId: mergedOriginal?.classId || selectedClassId,
+                subjectId: mergedOriginal?.subjectId || selectedSubjectId,
+                academicSession: mergedOriginal?.academicSession || selectedSession,
+                term: mergedOriginal?.term || selectedTerm,
+                caScore: existing.componentScores['ca'] ?? existing.componentScores['ca1'] ?? 0,
+                examScore: existing.componentScores['exam'] ?? existing.totalScore ?? 0,
+                totalScore: existing.totalScore,
+                grade: existing.grade,
+                status: statusToSet,
+                isLocked: willLock,
+                teacherId: isAtLeastAdmin
+                  ? (mergedOriginal?.teacherId || currentUser.uid)
+                  : currentUser.uid,
+                createdAt: mergedOriginal?.createdAt || null,
+                updatedAt: null,
+              } as Result
+            });
+          }
+        });
+        setScoresMap(updated);
+      }
+
+      if (writeError) {
         const failure = await diagnoseReportRuleDenial({
-          err: writeErr,
+          err: writeError,
           actionLabel: actionVerb,
           authUid: currentUser.uid,
           authEmail: currentUser.email,
@@ -732,49 +872,27 @@ export const ResultsPage: React.FC = () => {
           classId: selectedClassId,
           subjectId: selectedSubjectId,
           targetStatus: statusToSet,
-          targetResultIds: Array.from(savedResultIds.values()),
+          targetResultIds: failedEntry
+            ? [failedEntry.resultId]
+            : writeQueue.map((w) => w.resultId),
+          failedDetail: failedEntry
+            ? {
+                resultId: failedEntry.resultId,
+                operationType: failedEntry.operationType,
+                expectedSchoolId: failedEntry.payload.schoolId,
+                studentId: failedEntry.payload.studentId,
+                classId: failedEntry.payload.classId,
+                subjectId: failedEntry.payload.subjectId,
+                academicSession: failedEntry.payload.academicSession,
+                term: failedEntry.payload.term,
+              }
+            : undefined,
         });
         setErrorMsg(failure.userMessage);
         return;
       }
 
-      // Update local state statuses only for saved rows
-      const updated = new Map<string, StudentScoreDraft>(scoresMap);
-      students.forEach((s) => {
-        const usedResultId = savedResultIds.get(s.studentId);
-        if (!usedResultId) return;
-        const existing = updated.get(s.studentId);
-        if (existing) {
-          const serverOriginal = writeContext?.liveExistingResultsMap?.get(s.studentId);
-          const mergedOriginal = existing.originalResult || (serverOriginal as Result | undefined);
-          updated.set(s.studentId, {
-            ...existing,
-            status: statusToSet,
-            originalResult: {
-              ...(mergedOriginal || {}),
-              resultId: usedResultId,
-              schoolId: mergedOriginal?.schoolId || verifiedSchoolId,
-              studentId: s.studentId,
-              classId: selectedClassId,
-              subjectId: selectedSubjectId,
-              academicSession: selectedSession,
-              term: selectedTerm,
-              caScore: existing.componentScores['ca'] ?? existing.componentScores['ca1'] ?? 0,
-              examScore: existing.componentScores['exam'] ?? existing.totalScore ?? 0,
-              totalScore: existing.totalScore,
-              grade: existing.grade,
-              status: statusToSet,
-              isLocked: willLock,
-              teacherId: isAtLeastAdmin
-                ? (mergedOriginal?.teacherId || currentUser.uid)
-                : currentUser.uid,
-              createdAt: mergedOriginal?.createdAt || null,
-              updatedAt: null,
-            } as Result
-          });
-        }
-      });
-      setScoresMap(updated);
+      const savedCount = savedResultIds.size;
 
       // Condition L: Execute related audit & notification writes independently so errors are never conflated
       let relatedWriteWarning = '';
@@ -784,7 +902,7 @@ export const ResultsPage: React.FC = () => {
           statusToSet === 'PUBLISHED' ? 'RESULTS_PUBLISHED' : statusToSet === 'APPROVED' ? 'RESULTS_APPROVED' : statusToSet === 'SUBMITTED' ? 'RESULTS_SUBMITTED' : 'RESULTS_SAVED_DRAFT',
           'results',
           `${selectedClassId}_${selectedSubjectId}`,
-          `${statusToSet} scores for ${count} students in ${selectedSubjectName} (${activeProfile.name})`,
+          `${statusToSet} scores for ${savedCount} students in ${selectedSubjectName} (${activeProfile.name})`,
           verifiedSchoolId,
           { throwOnError: true }
         );
@@ -806,12 +924,12 @@ export const ResultsPage: React.FC = () => {
       const skippedSuffix = lockedSkippedCount > 0 ? ` (${lockedSkippedCount} locked row(s) left unchanged.)` : '';
       setSuccessMsg(
         (statusToSet === 'PUBLISHED'
-          ? `Successfully published results for ${count} students! Visible on parent and student portals.`
+          ? `Successfully published results for ${savedCount} students! Visible on parent and student portals.`
           : statusToSet === 'APPROVED'
-          ? `Approved results for ${count} students.`
+          ? `Approved results for ${savedCount} students.`
           : statusToSet === 'SUBMITTED'
-          ? `Submitted marks for ${count} students for administrative review.`
-          : `Saved scores as DRAFT for ${count} students.`) + skippedSuffix
+          ? `Submitted marks for ${savedCount} students for administrative review.`
+          : `Saved scores as DRAFT for ${savedCount} students.`) + skippedSuffix
       );
       if (relatedWriteWarning) {
         setErrorMsg(relatedWriteWarning);

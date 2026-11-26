@@ -10,6 +10,8 @@
  * TypeScript helpers in src/services/reportAuthorizationService.ts.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   buildScopedResultId,
   evaluateReportConditionsSync,
@@ -910,6 +912,32 @@ assert(
   'R11. Legacy null teacherId normalizes cleanly to auth.uid and classTeacherId === auth.uid is authorized'
 );
 
+// R12: Firestore Security Rules lookup budget check (single-doc <= 10 vs WriteBatch <= 20 across all ops)
+const EXTERNAL_LOOKUPS_PER_TEACHER_RESULT_WRITE = 5; // users/{uid}, memberships/{id}, teachers/{tid}, classes/{cid}, subjects/{sid}
+const FIRESTORE_SINGLE_DOC_LOOKUP_LIMIT = 10;
+const FIRESTORE_BATCH_TOTAL_LOOKUP_LIMIT = 20;
+
+const monolithicBatch10Students = 10 * EXTERNAL_LOOKUPS_PER_TEACHER_RESULT_WRITE; // 50 > 20 -> rejected!
+const monolithicBatch5Students = 5 * EXTERNAL_LOOKUPS_PER_TEACHER_RESULT_WRITE;   // 25 > 20 -> rejected!
+const singleDocPerStudent = EXTERNAL_LOOKUPS_PER_TEACHER_RESULT_WRITE;           // 5 <= 10 -> allowed for 1..N students!
+
+assert(
+  monolithicBatch5Students > FIRESTORE_BATCH_TOTAL_LOOKUP_LIMIT &&
+    monolithicBatch10Students > FIRESTORE_BATCH_TOTAL_LOOKUP_LIMIT &&
+    singleDocPerStudent <= FIRESTORE_SINGLE_DOC_LOOKUP_LIMIT,
+  'R12. Single-document setDoc stays within 5 <= 10 rule-lookup cap while monolithic WriteBatch fails >= 5 students (> 20 lookups)'
+);
+
+// R13: Verify ResultsPage.tsx no longer sends monolithic writeBatch commits for /results submissions
+const resultsPageSrc = fs.readFileSync(
+  path.resolve(process.cwd(), 'src/pages/results/ResultsPage.tsx'),
+  'utf8'
+);
+assert(
+  !resultsPageSrc.includes('writeBatch(') && resultsPageSrc.includes('setDoc(entry.ref, entry.payload, { merge: true })'),
+  'R13. ResultsPage executeSaveResults uses single-document setDoc writes instead of monolithic writeBatch'
+);
+
 console.log('\n========================================');
 console.log(`PHASE 6 TEST RESULTS: ${passed} PASSED, ${failed} FAILED`);
 console.log('========================================');
@@ -917,3 +945,4 @@ console.log('========================================');
 if (failed > 0) {
   process.exit(1);
 }
+

@@ -849,8 +849,19 @@ export async function verifyAndEvaluateReportAuthorization(
   return { evaluation, liveMembership, liveTeacher, resolvedResultIds, liveExistingResultsMap };
 }
 
+export interface FailedReportWriteDetail {
+  resultId: string;
+  operationType: 'CREATE' | 'UPDATE';
+  expectedSchoolId: string;
+  studentId: string;
+  classId: string;
+  subjectId: string;
+  academicSession: string;
+  term: string;
+}
+
 /**
- * Runs read-only live diagnostics if batch.commit() still fails with Firestore permission-denied,
+ * Runs read-only live diagnostics if a write to /results/{resultId} fails with Firestore permission-denied,
  * returning an accurate, safe, non-PII error message identifying the exact failing rule condition.
  */
 export async function diagnoseReportRuleDenial(params: {
@@ -866,9 +877,11 @@ export async function diagnoseReportRuleDenial(params: {
   subjectId: string;
   targetStatus: ResultStatus;
   targetResultIds: string[];
+  usedBatchCount?: number;
+  failedDetail?: FailedReportWriteDetail;
 }): Promise<{ code: ReportDiagnosticCode; userMessage: string }> {
   const baseFailure = formatReportWriteFailure(params.err, 'REPORT_WRITE', params.actionLabel);
-  const raw = params.err instanceof Error ? params.err.message : String(params.err || '');
+  const raw = params.err instanceof Error ? errMessage(params.err) : String(params.err || '');
   const isPermError =
     raw.toLowerCase().includes('missing or insufficient permissions') ||
     raw.includes('permission-denied');
@@ -882,6 +895,15 @@ export async function diagnoseReportRuleDenial(params: {
     code,
     userMessage: isDevEnv() ? `[${code}] ${msg}` : msg,
   });
+
+  // Firestore Rules cap multi-document WriteBatch requests at 20 document access calls total
+  // (no cross-document caching in batches; each teacher /results write evaluates 5 external docs).
+  if (params.usedBatchCount && params.usedBatchCount * 5 > 20) {
+    return wrap(
+      'FIRESTORE_RULES_DENIED',
+      `Batch write of ${params.usedBatchCount} student reports exceeded Firestore's 20-document security-rule lookup limit (${params.usedBatchCount * 5} lookups).`
+    );
+  }
 
   try {
     const mSnap = await getDoc(doc(db, 'memberships', `${schoolId}_${params.authUid}`));
@@ -990,6 +1012,48 @@ export async function diagnoseReportRuleDenial(params: {
         );
       }
 
+      const inspectExistingResult = (rData: Partial<Result> & { locked?: boolean }) => {
+        const lockCheck = isResultRecordLocked(rData, params.authUid, tid, false);
+        if (lockCheck.locked) {
+          return wrap(
+            'REPORT_LOCKED',
+            'One or more target student reports are already approved, published, locked, or owned by another teacher.'
+          );
+        }
+        if (params.failedDetail) {
+          const d = params.failedDetail;
+          if (
+            (rData.schoolId && rData.schoolId !== d.expectedSchoolId) ||
+            (rData.studentId && rData.studentId !== d.studentId) ||
+            (rData.classId && rData.classId !== d.classId) ||
+            (rData.subjectId && rData.subjectId !== d.subjectId) ||
+            (rData.academicSession && rData.academicSession !== d.academicSession) ||
+            (rData.term && rData.term !== d.term)
+          ) {
+            return wrap(
+              'SCHOOL_ID_MISMATCH',
+              'An existing report record at this path has mismatched school, class, subject, session, or term metadata.'
+            );
+          }
+        }
+        return null;
+      };
+
+      // If a specific resultId failed, try reading it directly (safe-guarded against non-existent doc permission-denied)
+      if (params.failedDetail?.resultId) {
+        try {
+          const directSnap = await getDoc(doc(db, 'results', params.failedDetail.resultId));
+          if (directSnap.exists()) {
+            const directDiagnosis = inspectExistingResult(
+              directSnap.data() as Partial<Result> & { locked?: boolean }
+            );
+            if (directDiagnosis) return directDiagnosis;
+          }
+        } catch {
+          // Non-existent doc or cross-tenant collision triggers allow get denial; continue to scoped list check
+        }
+      }
+
       const existingDocsSnap = await getDocs(
         query(
           collection(db, 'results'),
@@ -1002,13 +1066,8 @@ export async function diagnoseReportRuleDenial(params: {
       for (const rDoc of existingDocsSnap.docs) {
         if (!targetIdSet.has(rDoc.id)) continue;
         const rData = rDoc.data() as Partial<Result> & { locked?: boolean };
-        const lockCheck = isResultRecordLocked(rData, params.authUid, tid, false);
-        if (lockCheck.locked) {
-          return wrap(
-            'REPORT_LOCKED',
-            'One or more target student reports are already approved, published, locked, or owned by another teacher.'
-          );
-        }
+        const listDiagnosis = inspectExistingResult(rData);
+        if (listDiagnosis) return listDiagnosis;
       }
     }
   } catch (diagErr) {
@@ -1018,6 +1077,10 @@ export async function diagnoseReportRuleDenial(params: {
   }
 
   return baseFailure;
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err || '');
 }
 
 /**
