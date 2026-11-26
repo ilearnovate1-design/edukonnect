@@ -875,6 +875,11 @@ export interface FailedReportWriteDetail {
   subjectId: string;
   academicSession: string;
   term: string;
+  teacherId?: string;
+  submittedBy?: string;
+  status?: ResultStatus;
+  isLocked?: boolean;
+  locked?: boolean;
 }
 
 /**
@@ -913,15 +918,62 @@ export async function diagnoseReportRuleDenial(params: {
     userMessage: isDevEnv() ? `[${code}] ${msg}` : msg,
   });
 
-  // Firestore Rules cap multi-document WriteBatch requests at 20 document access calls total
-  // (no cross-document caching in batches; each teacher /results write evaluates 5 external docs).
-  if (params.usedBatchCount && params.usedBatchCount * 5 > 20) {
+  // Firestore Rules cap multi-document WriteBatch requests at 20 document access calls total.
+  if (params.usedBatchCount && params.usedBatchCount * 4 > 20) {
     return wrap(
       'FIRESTORE_RULES_DENIED',
-      `Batch write of ${params.usedBatchCount} student reports exceeded Firestore's 20-document security-rule lookup limit (${params.usedBatchCount * 5} lookups).`
+      `Batch write of ${params.usedBatchCount} student reports exceeded Firestore's 20-document security-rule lookup limit.`
     );
   }
 
+  // Validate required payload IDs & invariants enforced by firestore.rules
+  if (params.failedDetail) {
+    const d = params.failedDetail;
+    const isValidRuleId = (v?: string) => typeof v === 'string' && v.length > 0 && v.length <= 128;
+    if (
+      !isValidRuleId(d.expectedSchoolId) ||
+      normalizeId(d.expectedSchoolId) === 'default' ||
+      !isValidRuleId(d.studentId) ||
+      !isValidRuleId(d.classId) ||
+      !isValidRuleId(d.subjectId) ||
+      !isValidRuleId(d.academicSession) ||
+      !isValidRuleId(d.term)
+    ) {
+      return wrap(
+        'SCHOOL_ID_MISMATCH',
+        'One or more required report metadata fields (school, student, class, subject, session, or term) are missing or invalid.'
+      );
+    }
+
+    if (params.role === 'TEACHER' && !params.isAtLeastAdmin) {
+      if (d.teacherId && d.teacherId !== params.authUid) {
+        return wrap(
+          'MEMBERSHIP_MISSING',
+          'Report ownership UID mismatch: teacherId in the write payload did not match your signed-in account UID.'
+        );
+      }
+      if (d.isLocked === true || d.locked === true) {
+        return wrap(
+          'REPORT_LOCKED',
+          'The report payload was marked locked and cannot be written by a teacher.'
+        );
+      }
+      if (d.status && d.status !== 'DRAFT' && d.status !== 'SUBMITTED') {
+        return wrap(
+          'INVALID_STATUS_TRANSITION',
+          'Teachers can only save DRAFT or SUBMITTED student reports.'
+        );
+      }
+      if (d.status === 'SUBMITTED' && d.submittedBy !== params.authUid) {
+        return wrap(
+          'MEMBERSHIP_MISSING',
+          'Report submission UID mismatch: submittedBy did not match your signed-in account.'
+        );
+      }
+    }
+  }
+
+  let inspectionStage = 'membership lookup';
   try {
     const mSnap = await getDoc(doc(db, 'memberships', `${schoolId}_${params.authUid}`));
     if (!mSnap.exists()) {
@@ -940,7 +992,7 @@ export async function diagnoseReportRuleDenial(params: {
     if (normalizeId(mData.schoolId) !== schoolId) {
       return wrap(
         'SCHOOL_ID_MISMATCH',
-        'Your school membership belongs to a different school than the active workspace.'
+        'Your school membership belongs to a different school than the selected workspace.'
       );
     }
 
@@ -952,6 +1004,7 @@ export async function diagnoseReportRuleDenial(params: {
         );
       }
 
+      inspectionStage = 'teacher profile link lookup';
       let tid = (mData.teacherId || '').trim();
       if (!tid) {
         const uSnap = await getDoc(doc(db, 'users', params.authUid));
@@ -964,6 +1017,7 @@ export async function diagnoseReportRuleDenial(params: {
         );
       }
 
+      inspectionStage = 'teacher document verification';
       const tSnap = await getDoc(doc(db, 'teachers', tid));
       if (!tSnap.exists()) {
         return wrap(
@@ -982,13 +1036,21 @@ export async function diagnoseReportRuleDenial(params: {
         );
       }
       const authEmail = normalizeId(params.authEmail);
-      if (tData.userId !== params.authUid && (!authEmail || normalizeId(tData.email) !== authEmail)) {
+      const tEmailNorm = normalizeId(tData.email);
+      if (tData.userId !== params.authUid && (!authEmail || tEmailNorm !== authEmail)) {
         return wrap(
           'MEMBERSHIP_MISSING',
-          'Your teaching staff profile is not linked to your current email or account.'
+          'Your teaching staff profile userId/email is not linked to your current sign-in account. Please ask an admin to click Verify & Sync on your profile.'
+        );
+      }
+      if (tData.userId && tData.userId !== params.authUid) {
+        return wrap(
+          'MEMBERSHIP_MISSING',
+          'Your teaching staff profile userId points to a different account UID. Please ask an admin to re-sync your teacher profile.'
         );
       }
 
+      inspectionStage = 'class assignment verification';
       const cSnap = await getDoc(doc(db, 'classes', params.classId));
       if (!cSnap.exists() || normalizeId((cSnap.data() as any).schoolId) !== schoolId) {
         return wrap(
@@ -1009,6 +1071,7 @@ export async function diagnoseReportRuleDenial(params: {
         );
       }
 
+      inspectionStage = 'subject assignment verification';
       const sSnap = await getDoc(doc(db, 'subjects', params.subjectId));
       if (!sSnap.exists() || normalizeId((sSnap.data() as any).schoolId) !== schoolId) {
         return wrap(
@@ -1056,7 +1119,8 @@ export async function diagnoseReportRuleDenial(params: {
         return null;
       };
 
-      // If a specific resultId failed, try reading it directly (safe-guarded against non-existent doc permission-denied)
+      inspectionStage = 'target result inspection';
+      let directReadDenied = false;
       if (params.failedDetail?.resultId) {
         try {
           const directSnap = await getDoc(doc(db, 'results', params.failedDetail.resultId));
@@ -1067,7 +1131,7 @@ export async function diagnoseReportRuleDenial(params: {
             if (directDiagnosis) return directDiagnosis;
           }
         } catch {
-          // Non-existent doc or cross-tenant collision triggers allow get denial; continue to scoped list check
+          directReadDenied = true;
         }
       }
 
@@ -1080,17 +1144,44 @@ export async function diagnoseReportRuleDenial(params: {
         )
       );
       const targetIdSet = new Set(params.targetResultIds);
+      let foundFailedDocInSchool = false;
       for (const rDoc of existingDocsSnap.docs) {
         if (!targetIdSet.has(rDoc.id)) continue;
+        if (params.failedDetail?.resultId && rDoc.id === params.failedDetail.resultId) {
+          foundFailedDocInSchool = true;
+        }
         const rData = rDoc.data() as Partial<Result> & { locked?: boolean };
         const listDiagnosis = inspectExistingResult(rData);
         if (listDiagnosis) return listDiagnosis;
+      }
+
+      if (
+        params.failedDetail?.operationType === 'UPDATE' &&
+        directReadDenied &&
+        !foundFailedDocInSchool
+      ) {
+        return wrap(
+          'SCHOOL_ID_MISMATCH',
+          'This report document ID conflicts with an existing record belonging to a different school or class.'
+        );
+      }
+
+      // All client/database verification checks passed; surface explicit rule denial reason
+      if (params.failedDetail && !tData.userId) {
+        return wrap(
+          'MEMBERSHIP_MISSING',
+          'Your teacher profile is missing its userId link for direct rule verification. Please sign out and sign in again or ask your admin to verify your profile.'
+        );
       }
     }
   } catch (diagErr) {
     if (isDevEnv()) {
       console.warn('[ReportAuthDiagnostic] Post-denial inspection error:', diagErr);
     }
+    return wrap(
+      'FIRESTORE_RULES_DENIED',
+      `Permission check was denied during ${inspectionStage}. Please verify your active school membership, teacher profile UID link, and class/subject assignment.`
+    );
   }
 
   return baseFailure;

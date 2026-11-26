@@ -148,6 +148,8 @@ export const getSchoolSettings = async (schoolId: string = DEFAULT_TENANT_ID): P
         ...DEFAULT_SCHOOL_SETTINGS,
         ...data,
         schoolId: targetId,
+        currentAcademicSession: data.currentAcademicSession?.trim() || DEFAULT_SCHOOL_SETTINGS.currentAcademicSession,
+        currentTerm: (data.currentTerm?.trim() as SchoolSettings['currentTerm']) || DEFAULT_SCHOOL_SETTINGS.currentTerm,
         reportTemplate: {
           ...DEFAULT_REPORT_TEMPLATE,
           ...(data.reportTemplate || {}),

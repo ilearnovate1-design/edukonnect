@@ -378,7 +378,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         let activeParent: Parent | null = null;
 
         if (role === 'TEACHER') {
-          activeTeacher = teacherDocs.find((t) => (t.schoolId || '').trim().toLowerCase() === targetSchoolId && t.status !== 'INACTIVE') || null;
+          activeTeacher =
+            (selectedMembership.teacherId
+              ? teacherDocs.find((t) => t.teacherId === selectedMembership.teacherId && t.status !== 'INACTIVE')
+              : null) ||
+            teacherDocs.find((t) => (t.schoolId || '').trim().toLowerCase() === targetSchoolId && t.status !== 'INACTIVE') ||
+            null;
           if (!activeTeacher && selectedMembership.teacherId) {
             const directTeacherSnap: any = await fetchWithTimeout(doc(db, 'teachers', selectedMembership.teacherId));
             if (directTeacherSnap && directTeacherSnap.exists && directTeacherSnap.exists()) {

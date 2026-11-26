@@ -12,13 +12,16 @@ import {
   AlertTriangle,
   Info,
   Wrench,
-  AlertCircle
+  AlertCircle,
+  Users,
+  CheckCircle2,
+  XCircle
 } from 'lucide-react';
-import { collection, getDocs, query, orderBy, limit, doc, updateDoc, deleteDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, getDoc, query, orderBy, where, doc, updateDoc, deleteDoc, setDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSchool } from '../../contexts/SchoolContext';
-import { SchoolSettings, AppUser, UserApprovalStatus } from '../../types';
+import { SchoolSettings, AppUser, UserApprovalStatus, SchoolMembership, Teacher, SchoolClass, Subject } from '../../types';
 import { 
   getAllSchools, 
   saveSchoolSettings, 
@@ -27,11 +30,28 @@ import {
   deleteSchool,
   seedStandardCurriculumForSchool
 } from '../../services/schoolService';
+import { activateTeacherReportPermissions } from '../../services/teacherActivationService';
 import { purgeAllPlatformData } from '../../services/maintenanceService';
 import { Card, CardBody, CardHeader } from '../../components/common/Card';
 import { Modal } from '../../components/common/Modal';
 import { formatDate, logAudit } from '../../utils/formatters';
 import { useQueryTab } from '../../routes/useQueryTab';
+
+interface MemberVerificationCheck {
+  label: string;
+  ok: boolean;
+  detail: string;
+}
+
+interface MemberVerificationState {
+  checking: boolean;
+  syncing: boolean;
+  readyForReportWrites: boolean;
+  checks: MemberVerificationCheck[];
+  summaryMessage: string;
+  syncSuccessMessage?: string;
+  syncError?: string;
+}
 
 export const SuperAdminPage: React.FC = () => {
   const { isSuperAdmin, logout, currentUser } = useAuth();
@@ -41,11 +61,21 @@ export const SuperAdminPage: React.FC = () => {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useQueryTab<'schools' | 'users' | 'maintenance'>(
+  const [activeTab, setActiveTab] = useQueryTab<'schools' | 'users' | 'memberships' | 'maintenance'>(
     'tab',
     'schools',
-    ['schools', 'users', 'maintenance']
+    ['schools', 'users', 'memberships', 'maintenance']
   );
+
+  // School Memberships Inspector
+  const [membershipSchoolId, setMembershipSchoolId] = useState<string>('');
+  const [schoolMemberships, setSchoolMemberships] = useState<SchoolMembership[]>([]);
+  const [loadingMemberships, setLoadingMemberships] = useState(false);
+  const [membershipError, setMembershipError] = useState('');
+  const [membershipStatusFilter, setMembershipStatusFilter] = useState<'ACTIVE' | 'ALL'>('ACTIVE');
+  const [membershipRoleFilter, setMembershipRoleFilter] = useState<'ALL' | 'ADMIN' | 'TEACHER' | 'PARENT'>('ALL');
+  const [confirmedSchoolDoc, setConfirmedSchoolDoc] = useState<SchoolSettings | null>(null);
+  const [memberVerifications, setMemberVerifications] = useState<Record<string, MemberVerificationState>>({});
   
   // Create School Modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -110,6 +140,381 @@ export const SuperAdminPage: React.FC = () => {
       fetchSchools();
     }
   }, [isSuperAdmin]);
+
+  const fetchMembershipsForSchool = async (
+    targetSchoolId: string,
+    options?: { preserveVerifications?: boolean }
+  ) => {
+    const cleanId = targetSchoolId.trim().toLowerCase();
+    if (!cleanId) {
+      setConfirmedSchoolDoc(null);
+      setSchoolMemberships([]);
+      if (!options?.preserveVerifications) {
+        setMemberVerifications({});
+      }
+      return;
+    }
+
+    setLoadingMemberships(true);
+    setMembershipError('');
+    if (!options?.preserveVerifications) {
+      setMemberVerifications({});
+    }
+    try {
+      const [schoolSnap, memSnap] = await Promise.all([
+        getDoc(doc(db, 'schools', cleanId)),
+        getDocs(query(collection(db, 'memberships'), where('schoolId', '==', cleanId))),
+      ]);
+
+      setConfirmedSchoolDoc(schoolSnap.exists() ? (schoolSnap.data() as SchoolSettings) : null);
+
+      const list: SchoolMembership[] = [];
+      memSnap.forEach((d) => {
+        list.push({ ...(d.data() as SchoolMembership), id: d.id });
+      });
+      list.sort((a, b) => (a.role || '').localeCompare(b.role || '') || (a.userEmail || '').localeCompare(b.userEmail || ''));
+      setSchoolMemberships(list);
+    } catch (err: any) {
+      console.error('Failed to load memberships for school:', err);
+      setMembershipError(err?.message || 'Could not load memberships for this school ID.');
+    } finally {
+      setLoadingMemberships(false);
+    }
+  };
+
+  const inspectAndOptionallySyncMember = async (
+    membership: SchoolMembership,
+    mode: 'verify' | 'sync'
+  ) => {
+    const cleanSchool = (membership.schoolId || membershipSchoolId || '').trim().toLowerCase();
+    const uid = (membership.userId || '').trim();
+    const mEmail = (membership.userEmail || '').trim().toLowerCase();
+    const rowKey = membership.id || `${cleanSchool}_${uid}`;
+
+    if (!cleanSchool || !uid) {
+      setMemberVerifications((prev) => ({
+        ...prev,
+        [rowKey]: {
+          checking: false,
+          syncing: false,
+          readyForReportWrites: false,
+          checks: [
+            {
+              label: 'Membership Keys',
+              ok: false,
+              detail: 'Membership record is missing schoolId or userId.',
+            },
+          ],
+          summaryMessage: 'Cannot verify membership without schoolId and userId.',
+        },
+      }));
+      return;
+    }
+
+    const canonicalId = `${cleanSchool}_${uid}`;
+    setMemberVerifications((prev) => ({
+      ...prev,
+      [rowKey]: {
+        checking: true,
+        syncing: mode === 'sync',
+        readyForReportWrites: prev[rowKey]?.readyForReportWrites ?? false,
+        checks: prev[rowKey]?.checks ?? [],
+        summaryMessage: mode === 'sync' ? 'Syncing membership, user, and staff links...' : 'Verifying Firestore permissions chain...',
+      },
+    }));
+
+    try {
+      const checks: MemberVerificationCheck[] = [];
+      let syncSuccessMessage: string | undefined;
+
+      // Load current membership (canonical), user doc, and school classes/subjects
+      const [canonicalMemSnap, userSnap, classesSnap, subjectsSnap] = await Promise.all([
+        getDoc(doc(db, 'memberships', canonicalId)),
+        getDoc(doc(db, 'users', uid)),
+        getDocs(query(collection(db, 'classes'), where('schoolId', '==', cleanSchool))),
+        getDocs(query(collection(db, 'subjects'), where('schoolId', '==', cleanSchool))),
+      ]);
+
+      const schoolClasses: SchoolClass[] = classesSnap.docs.map((d) => ({
+        ...(d.data() as SchoolClass),
+        classId: (d.data() as any).classId || d.id,
+      }));
+      const schoolSubjects: Subject[] = subjectsSnap.docs.map((d) => ({
+        ...(d.data() as Subject),
+        subjectId: (d.data() as any).subjectId || d.id,
+      }));
+
+      // Resolve teacher document if TEACHER role
+      let teacherDoc: Teacher | null = null;
+      const requestedTeacherId = (membership.teacherId || (userSnap.exists() ? (userSnap.data() as any)?.teacherId : '') || '').trim();
+
+      if (membership.role === 'TEACHER') {
+        if (requestedTeacherId) {
+          const tSnap = await getDoc(doc(db, 'teachers', requestedTeacherId));
+          if (tSnap.exists()) {
+            teacherDoc = { ...(tSnap.data() as Teacher), teacherId: (tSnap.data() as any).teacherId || tSnap.id };
+          }
+        }
+        if (!teacherDoc) {
+          const tByUidSnap = await getDocs(
+            query(collection(db, 'teachers'), where('schoolId', '==', cleanSchool), where('userId', '==', uid))
+          );
+          if (!tByUidSnap.empty) {
+            const d = tByUidSnap.docs[0];
+            teacherDoc = { ...(d.data() as Teacher), teacherId: (d.data() as any).teacherId || d.id };
+          }
+        }
+        if (!teacherDoc && mEmail) {
+          const tByEmailSnap = await getDocs(
+            query(collection(db, 'teachers'), where('schoolId', '==', cleanSchool), where('email', '==', mEmail))
+          );
+          if (!tByEmailSnap.empty) {
+            const d = tByEmailSnap.docs[0];
+            teacherDoc = { ...(d.data() as Teacher), teacherId: (d.data() as any).teacherId || d.id };
+          }
+        }
+      }
+
+      // Optional repair / sync pass before re-checking
+      if (mode === 'sync') {
+        if (membership.role === 'TEACHER') {
+          if (teacherDoc) {
+            const syncRes = await activateTeacherReportPermissions({
+              schoolId: cleanSchool,
+              schoolName: confirmedSchoolDoc?.schoolName,
+              teacher: {
+                ...teacherDoc,
+                userId: uid,
+                email: teacherDoc.email || mEmail,
+              },
+              classes: schoolClasses,
+              actingAdminUid: currentUser?.uid,
+              isSuperAdmin: true,
+              provisionAuthIfMissing: false,
+            });
+            teacherDoc = syncRes.updatedTeacher;
+            syncSuccessMessage = syncRes.message;
+          } else {
+            // Ensure canonical membership & user doc are at least ACTIVE and normalized
+            await setDoc(
+              doc(db, 'memberships', canonicalId),
+              {
+                id: canonicalId,
+                userId: uid,
+                userEmail: mEmail,
+                schoolId: cleanSchool,
+                ...(confirmedSchoolDoc?.schoolName ? { schoolName: confirmedSchoolDoc.schoolName } : {}),
+                role: 'TEACHER',
+                status: 'ACTIVE',
+                ...(requestedTeacherId ? { teacherId: requestedTeacherId } : {}),
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+            syncSuccessMessage = requestedTeacherId
+              ? `Membership synced to ${canonicalId}, but teachers/${requestedTeacherId} was not found.`
+              : `Membership synced to ${canonicalId}, but no linked teacher document was found.`;
+          }
+        } else {
+          await setDoc(
+            doc(db, 'memberships', canonicalId),
+            {
+              id: canonicalId,
+              userId: uid,
+              userEmail: mEmail,
+              schoolId: cleanSchool,
+              ...(confirmedSchoolDoc?.schoolName ? { schoolName: confirmedSchoolDoc.schoolName } : {}),
+              role: membership.role,
+              status: 'ACTIVE',
+              ...(membership.parentId ? { parentId: membership.parentId } : {}),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+          await setDoc(
+            doc(db, 'users', uid),
+            {
+              uid,
+              email: mEmail,
+              schoolId: cleanSchool,
+              role: membership.role,
+              approvalStatus: 'APPROVED',
+              active: true,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+          syncSuccessMessage = `Synced ${membership.role} membership ${canonicalId} and user profile.`;
+        }
+      }
+
+      // Re-read canonical membership & user profile after potential sync
+      const [latestMemSnap, latestUserSnap] =
+        mode === 'sync'
+          ? await Promise.all([getDoc(doc(db, 'memberships', canonicalId)), getDoc(doc(db, 'users', uid))])
+          : [canonicalMemSnap, userSnap];
+
+      const memData = latestMemSnap.exists() ? (latestMemSnap.data() as any) : null;
+      const memSchoolNorm = (memData?.schoolId || '').trim().toLowerCase();
+      const memOk =
+        latestMemSnap.exists() &&
+        memData?.userId === uid &&
+        memSchoolNorm === cleanSchool &&
+        memData?.status === 'ACTIVE' &&
+        memData?.role === membership.role;
+      checks.push({
+        label: `Canonical Membership (${canonicalId})`,
+        ok: Boolean(memOk),
+        detail: !latestMemSnap.exists()
+          ? `Document memberships/${canonicalId} does not exist (rules require exact canonical ID).`
+          : memOk
+          ? `ACTIVE ${memData.role} membership verified for UID ${uid} in ${cleanSchool}.`
+          : `Mismatch: status=${memData?.status}, role=${memData?.role}, schoolId=${memData?.schoolId}, userId=${memData?.userId}`,
+      });
+
+      const uData = latestUserSnap.exists() ? (latestUserSnap.data() as any) : null;
+      const uSchoolNorm = (uData?.schoolId || '').trim().toLowerCase();
+      const uOk =
+        latestUserSnap.exists() &&
+        uSchoolNorm === cleanSchool &&
+        uData?.approvalStatus === 'APPROVED' &&
+        (membership.role !== 'TEACHER' || !teacherDoc || uData?.teacherId === teacherDoc.teacherId);
+      checks.push({
+        label: `User Profile (users/${uid})`,
+        ok: Boolean(uOk),
+        detail: !latestUserSnap.exists()
+          ? `users/${uid} does not exist yet (will be synced on Sign-In or Verify & Sync).`
+          : uOk
+          ? `APPROVED ${uData.role} profile linked to ${cleanSchool}${uData.teacherId ? ` (teacherId: ${uData.teacherId})` : ''}.`
+          : `schoolId=${uData.schoolId || 'none'}, role=${uData.role || 'none'}, status=${uData.approvalStatus || 'none'}, teacherId=${uData.teacherId || 'none'}`,
+      });
+
+      let readyForReportWrites = Boolean(memOk && uOk);
+
+      if (membership.role === 'TEACHER') {
+        const tSchoolNorm = (teacherDoc?.schoolId || '').trim().toLowerCase();
+        const tEmailNorm = (teacherDoc?.email || '').trim().toLowerCase();
+        const tOwnerMatch =
+          Boolean(teacherDoc) &&
+          (teacherDoc!.userId === uid || (Boolean(mEmail) && tEmailNorm === mEmail));
+        const tUidConflict = Boolean(teacherDoc?.userId && teacherDoc.userId !== uid);
+        const tDocOk =
+          Boolean(teacherDoc) &&
+          tSchoolNorm === cleanSchool &&
+          teacherDoc!.status !== 'INACTIVE' &&
+          tOwnerMatch &&
+          !tUidConflict;
+
+        checks.push({
+          label: `Teacher Record (teachers/${teacherDoc?.teacherId || requestedTeacherId || 'missing'})`,
+          ok: tDocOk,
+          detail: !teacherDoc
+            ? `No matching teacher document found for teacherId=${requestedTeacherId || 'none'} in ${cleanSchool}.`
+            : tUidConflict
+            ? `UID conflict: teachers/${teacherDoc.teacherId}.userId is "${teacherDoc.userId}" instead of "${uid}". Click Verify & Sync to repair.`
+            : tDocOk
+            ? `ACTIVE teacher doc (${teacherDoc.firstName} ${teacherDoc.lastName}), userId=${teacherDoc.userId || 'email-matched'}, email=${teacherDoc.email}.`
+            : `Mismatch: status=${teacherDoc.status}, schoolId=${teacherDoc.schoolId}, userId=${teacherDoc.userId || 'unset'}, email=${teacherDoc.email}.`,
+        });
+
+        const tid = teacherDoc?.teacherId || requestedTeacherId;
+        const assignedClassIds = Array.isArray(teacherDoc?.assignedClassIds) ? teacherDoc!.assignedClassIds : [];
+        const matchedClasses = schoolClasses.filter(
+          (c) =>
+            assignedClassIds.includes(c.classId) ||
+            (tid && c.classTeacherId === tid) ||
+            c.classTeacherId === uid
+        );
+        const classOk = matchedClasses.length > 0;
+        checks.push({
+          label: 'Class Assignment',
+          ok: classOk,
+          detail: classOk
+            ? `Authorized for ${matchedClasses.length} class(es): ${matchedClasses.map((c) => `${c.name} (${c.classId})`).join(', ')}.`
+            : `No classes assigned on teachers/${tid || 'unknown'} (assignedClassIds empty and not homeroom classTeacherId). Assign at least 1 class in Classes or Teachers.`,
+        });
+
+        const teacherSubjects = Array.isArray(teacherDoc?.subjects) ? teacherDoc!.subjects : [];
+        const matchedSubjects =
+          teacherSubjects.length === 0
+            ? schoolSubjects
+            : schoolSubjects.filter(
+                (s) => teacherSubjects.includes(s.subjectId) || teacherSubjects.includes(s.name)
+              );
+        const subjectOk = teacherSubjects.length === 0 ? schoolSubjects.length > 0 : matchedSubjects.length > 0;
+        checks.push({
+          label: 'Subject Assignment',
+          ok: subjectOk,
+          detail:
+            teacherSubjects.length === 0
+              ? schoolSubjects.length > 0
+                ? `Unrestricted (empty subjects list allows all ${schoolSubjects.length} school subjects).`
+                : `Teacher has unrestricted subjects, but ${cleanSchool} has 0 subject documents in /subjects.`
+              : matchedSubjects.length > 0
+              ? `Matched ${matchedSubjects.length} subject(s): ${matchedSubjects.map((s) => `${s.name} (${s.subjectId})`).join(', ')}.`
+              : `Teacher subjects [${teacherSubjects.join(', ')}] do not match any subjectId or name in ${cleanSchool}/subjects.`,
+        });
+
+        readyForReportWrites = Boolean(memOk && tDocOk && classOk && subjectOk);
+      }
+
+      const failingCount = checks.filter((c) => !c.ok).length;
+      setMemberVerifications((prev) => ({
+        ...prev,
+        [rowKey]: {
+          checking: false,
+          syncing: false,
+          readyForReportWrites,
+          checks,
+          summaryMessage:
+            failingCount === 0
+              ? membership.role === 'TEACHER'
+                ? 'Verified: Teacher passes all Firestore security rule checks for saving & submitting reports.'
+                : 'Verified: Membership and user profile match all tenant rules.'
+              : `${failingCount} check(s) require attention before direct writes will succeed.`,
+          syncSuccessMessage,
+        },
+      }));
+
+      if (mode === 'sync') {
+        await fetchMembershipsForSchool(cleanSchool, { preserveVerifications: true });
+      }
+    } catch (err: any) {
+      setMemberVerifications((prev) => ({
+        ...prev,
+        [rowKey]: {
+          checking: false,
+          syncing: false,
+          readyForReportWrites: false,
+          checks: [],
+          summaryMessage: 'Verification failed due to a Firestore query error.',
+          syncError: err?.message || 'Verification failed.',
+        },
+      }));
+    }
+  };
+
+  useEffect(() => {
+    if (!isSuperAdmin || activeTab !== 'memberships') return;
+    const initialTarget =
+      membershipSchoolId ||
+      (currentSchoolId && currentSchoolId !== 'default' ? currentSchoolId : '') ||
+      schools[0]?.schoolId ||
+      '';
+    if (initialTarget && initialTarget !== membershipSchoolId) {
+      setMembershipSchoolId(initialTarget);
+    }
+    if (initialTarget) {
+      fetchMembershipsForSchool(initialTarget);
+    }
+  }, [isSuperAdmin, activeTab, schools]);
+
+  const openSchoolMemberships = (targetId: string) => {
+    const cleanId = targetId.trim().toLowerCase();
+    setMembershipSchoolId(cleanId);
+    setActiveTab('memberships');
+    fetchMembershipsForSchool(cleanId);
+  };
 
   const handleAddSchool = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -354,22 +759,28 @@ export const SuperAdminPage: React.FC = () => {
           <h1 className="text-2xl font-bold text-slate-900">System Management</h1>
           <p className="text-slate-500 text-sm">Multi-tenant school directory and domain routing</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setActiveTab('schools')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'schools' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'}`}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${activeTab === 'schools' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'}`}
           >
             Schools
           </button>
           <button
+            onClick={() => setActiveTab('memberships')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${activeTab === 'memberships' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'}`}
+          >
+            Memberships
+          </button>
+          <button
             onClick={() => setActiveTab('users')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'users' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'}`}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${activeTab === 'users' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'}`}
           >
             Users & Approvals
           </button>
           <button
             onClick={() => setActiveTab('maintenance')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'maintenance' ? 'bg-red-600 text-white' : 'bg-white text-red-600 hover:bg-red-50 border border-red-200'}`}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${activeTab === 'maintenance' ? 'bg-red-600 text-white' : 'bg-white text-red-600 hover:bg-red-50 border border-red-200'}`}
           >
             Maintenance
           </button>
@@ -537,6 +948,16 @@ export const SuperAdminPage: React.FC = () => {
                           <td className="px-6 py-5 text-right">
                             <div className="flex items-center justify-end gap-2">
                               <button
+                                type="button"
+                                onClick={() => openSchoolMemberships(school.schoolId!)}
+                                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors cursor-pointer"
+                                title="Inspect active memberships for this school"
+                              >
+                                <Users className="w-3.5 h-3.5" />
+                                <span>Memberships</span>
+                              </button>
+
+                              <button
                                 onClick={() => handleSwitchSchool(school.schoolId!)}
                                 disabled={isActive}
                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
@@ -680,6 +1101,285 @@ export const SuperAdminPage: React.FC = () => {
             </table>
           </div>
         </Card>
+      ) : activeTab === 'memberships' ? (
+        <div className="space-y-4">
+          <Card>
+            <CardBody className="p-5 space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 flex-1">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Select School
+                    </label>
+                    <select
+                      value={schools.some((s) => s.schoolId === membershipSchoolId) ? membershipSchoolId : ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val) {
+                          setMembershipSchoolId(val);
+                          fetchMembershipsForSchool(val);
+                        }
+                      }}
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-slate-800"
+                    >
+                      <option value="">Choose registered school...</option>
+                      {schools.map((s) => (
+                        <option key={s.schoolId} value={s.schoolId}>
+                          {s.schoolName} ({s.schoolId})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Or Enter School ID
+                    </label>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={membershipSchoolId}
+                        onChange={(e) => setMembershipSchoolId(e.target.value.toLowerCase().trim())}
+                        placeholder="e.g. bistoland-elementary-school"
+                        className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg bg-white text-slate-800"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => fetchMembershipsForSchool(membershipSchoolId)}
+                        className="px-3 py-2 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800 shrink-0 cursor-pointer"
+                      >
+                        Verify
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Status Filter
+                    </label>
+                    <select
+                      value={membershipStatusFilter}
+                      onChange={(e) => setMembershipStatusFilter(e.target.value as 'ACTIVE' | 'ALL')}
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-slate-800"
+                    >
+                      <option value="ACTIVE">ACTIVE Only</option>
+                      <option value="ALL">All Statuses</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Role Filter
+                    </label>
+                    <select
+                      value={membershipRoleFilter}
+                      onChange={(e) => setMembershipRoleFilter(e.target.value as any)}
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-slate-800"
+                    >
+                      <option value="ALL">All Roles</option>
+                      <option value="ADMIN">ADMIN</option>
+                      <option value="TEACHER">TEACHER</option>
+                      <option value="PARENT">PARENT</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {membershipSchoolId && !loadingMemberships && (
+                confirmedSchoolDoc ? (
+                  <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2 text-emerald-900">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>
+                        Confirmed School ID <code className="font-mono font-bold">{confirmedSchoolDoc.schoolId || membershipSchoolId}</code>: <strong>{confirmedSchoolDoc.schoolName}</strong>
+                        {confirmedSchoolDoc.email ? ` (${confirmedSchoolDoc.email})` : ''}
+                      </span>
+                    </div>
+                    <span className="font-semibold text-emerald-800">
+                      {schoolMemberships.filter((m) => m.status === 'ACTIVE').length} active membership(s) / {schoolMemberships.length} total
+                    </span>
+                  </div>
+                ) : (
+                  <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 flex items-center gap-2 text-xs text-amber-900">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      No school profile document found at <code className="font-mono font-bold">schools/{membershipSchoolId}</code>.
+                    </span>
+                  </div>
+                )
+              )}
+
+              {membershipError && (
+                <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-700">
+                  {membershipError}
+                </div>
+              )}
+            </CardBody>
+
+            <div className="overflow-x-auto border-t border-slate-100">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-slate-100 bg-slate-50/50">
+                    <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">User Email / UID</th>
+                    <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Role</th>
+                    <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Status</th>
+                    <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Linked Profile</th>
+                    <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Document ID</th>
+                    <th className="px-5 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Verify & Repair</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-sm">
+                  {loadingMemberships ? (
+                    <tr>
+                      <td colSpan={6} className="px-5 py-10 text-center text-slate-500 text-xs">
+                        Loading memberships...
+                      </td>
+                    </tr>
+                  ) : (() => {
+                    const visible = schoolMemberships.filter((m) => {
+                      if (membershipStatusFilter === 'ACTIVE' && m.status !== 'ACTIVE') return false;
+                      if (membershipRoleFilter !== 'ALL' && m.role !== membershipRoleFilter) return false;
+                      return true;
+                    });
+                    if (visible.length === 0) {
+                      return (
+                        <tr>
+                          <td colSpan={6} className="px-5 py-10 text-center text-slate-500 text-xs">
+                            No {membershipStatusFilter === 'ACTIVE' ? 'ACTIVE ' : ''}memberships found for{' '}
+                            <code className="font-mono">{membershipSchoolId || 'selected school'}</code>.
+                          </td>
+                        </tr>
+                      );
+                    }
+                    return visible.map((m) => {
+                      const expectedId = `${(m.schoolId || membershipSchoolId).toLowerCase()}_${m.userId}`;
+                      const isCanonical = m.id === expectedId;
+                      const rowKey = m.id || expectedId;
+                      const vState = memberVerifications[rowKey];
+                      return (
+                        <React.Fragment key={rowKey}>
+                          <tr className="hover:bg-slate-50/60">
+                            <td className="px-5 py-3">
+                              <p className="font-semibold text-slate-900 text-xs">{m.userEmail || 'No email'}</p>
+                              <p className="text-[11px] font-mono text-slate-400">{m.userId}</p>
+                            </td>
+                            <td className="px-5 py-3">
+                              <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                                m.role === 'ADMIN'
+                                  ? 'bg-purple-100 text-purple-800'
+                                  : m.role === 'TEACHER'
+                                  ? 'bg-blue-100 text-blue-800'
+                                  : 'bg-teal-100 text-teal-800'
+                              }`}>
+                                {m.role}
+                              </span>
+                            </td>
+                            <td className="px-5 py-3">
+                              <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                                m.status === 'ACTIVE'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {m.status}
+                              </span>
+                            </td>
+                            <td className="px-5 py-3 text-xs font-mono text-slate-600">
+                              {m.role === 'TEACHER'
+                                ? (m.teacherId ? `teacherId: ${m.teacherId}` : <span className="text-rose-600 font-sans font-semibold">Missing teacherId</span>)
+                                : m.role === 'PARENT'
+                                ? (m.parentId ? `parentId: ${m.parentId}` : <span className="text-amber-600 font-sans">No parentId</span>)
+                                : 'School Admin'}
+                            </td>
+                            <td className="px-5 py-3">
+                              <p className="text-[11px] font-mono text-slate-600 break-all">{m.id}</p>
+                              {!isCanonical && (
+                                <span className="text-[10px] font-semibold text-amber-700">
+                                  Non-canonical (rules expect {expectedId})
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-5 py-3 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={Boolean(vState?.checking)}
+                                  onClick={() => inspectAndOptionallySyncMember(m, 'verify')}
+                                  className="px-2.5 py-1 border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 rounded text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                                >
+                                  {vState?.checking && !vState?.syncing ? 'Checking...' : 'Verify'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={Boolean(vState?.checking)}
+                                  onClick={() => inspectAndOptionallySyncMember(m, 'sync')}
+                                  className="px-2.5 py-1 bg-emerald-600 text-white hover:bg-emerald-700 rounded text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                                >
+                                  {vState?.syncing ? 'Syncing...' : 'Verify & Sync'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                          {vState && (
+                            <tr className="bg-slate-50/80">
+                              <td colSpan={6} className="px-5 py-3 border-t border-slate-100">
+                                <div className="space-y-2 text-xs">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className={`font-semibold flex items-center gap-1.5 ${vState.readyForReportWrites ? 'text-emerald-700' : 'text-amber-800'}`}>
+                                      {vState.readyForReportWrites ? (
+                                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                      ) : (
+                                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                                      )}
+                                      {vState.summaryMessage}
+                                    </span>
+                                  </div>
+                                  {vState.syncSuccessMessage && (
+                                    <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2.5 py-1.5">
+                                      {vState.syncSuccessMessage}
+                                    </p>
+                                  )}
+                                  {vState.syncError && (
+                                    <p className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2.5 py-1.5">
+                                      {vState.syncError}
+                                    </p>
+                                  )}
+                                  {vState.checks.length > 0 && (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-1">
+                                      {vState.checks.map((chk) => (
+                                        <div
+                                          key={chk.label}
+                                          className={`p-2 rounded border text-[11px] flex items-start gap-2 ${
+                                            chk.ok
+                                              ? 'bg-white border-emerald-200 text-slate-700'
+                                              : 'bg-rose-50/70 border-rose-200 text-rose-900'
+                                          }`}
+                                        >
+                                          {chk.ok ? (
+                                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                                          ) : (
+                                            <XCircle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                                          )}
+                                          <div>
+                                            <p className="font-semibold">{chk.label}</p>
+                                            <p className="text-slate-500 mt-0.5 break-all">{chk.detail}</p>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    });
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
       ) : (
         <div className="max-w-2xl mx-auto space-y-6">
           <Card className="border-red-100">

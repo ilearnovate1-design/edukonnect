@@ -99,8 +99,8 @@ export const ResultsPage: React.FC = () => {
   // Selections
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
-  const [selectedTerm, setSelectedTerm] = useState<Term>(settings.currentTerm);
-  const [selectedSession, setSelectedSession] = useState(settings.currentAcademicSession);
+  const [selectedTerm, setSelectedTerm] = useState<Term>(settings.currentTerm || 'First Term');
+  const [selectedSession, setSelectedSession] = useState(settings.currentAcademicSession || '2026/2027');
   const [manualProfileId, setManualProfileId] = useState<string>('');
 
   // Active Draft Scores Map: studentId -> StudentScoreDraft
@@ -275,7 +275,10 @@ export const ResultsPage: React.FC = () => {
           )
         );
         const sList: Student[] = [];
-        sSnap.forEach((d) => sList.push(d.data() as Student));
+        sSnap.forEach((d) => {
+          const st = d.data() as Student;
+          sList.push({ ...st, studentId: st.studentId || d.id });
+        });
         sList.sort((a, b) => a.firstName.localeCompare(b.firstName));
         setStudents(sList);
 
@@ -901,6 +904,10 @@ export const ResultsPage: React.FC = () => {
                 subjectId: failedEntry.payload.subjectId,
                 academicSession: failedEntry.payload.academicSession,
                 term: failedEntry.payload.term,
+                teacherId: failedEntry.payload.teacherId,
+                submittedBy: failedEntry.payload.submittedBy,
+                status: failedEntry.payload.status,
+                isLocked: failedEntry.payload.isLocked,
               }
             : undefined,
         });

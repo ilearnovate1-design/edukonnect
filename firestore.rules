@@ -14,7 +14,7 @@ service cloud.firestore {
     }
 
     function strLower(val) {
-      return val is string ? val.lower() : '';
+      return val is string ? val.trim().lower() : '';
     }
 
     function isNonEmptyId(id) {
@@ -50,13 +50,18 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    function isSuperAdminUserDoc() {
+      return isAuthenticated() &&
+        userExists() && (
+          getUserData().get('isSuperAdmin', false) == true ||
+          getUserData().get('role', '') == 'SUPER_ADMIN'
+        );
+    }
+
     function isSuperAdmin() {
       return isAuthenticated() && (
         isSuperAdminEmail() ||
-        (userExists() && (
-          getUserData().get('isSuperAdmin', false) == true ||
-          getUserData().get('role', '') == 'SUPER_ADMIN'
-        ))
+        isSuperAdminUserDoc()
       );
     }
 
@@ -80,11 +85,13 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/memberships/$(strLower(schoolId) + '_' + request.auth.uid)).data;
     }
 
+    function isSchoolAdminMembership(schoolId) {
+      return hasActiveMembership(schoolId) &&
+        getMembership(schoolId).get('role', '') == 'ADMIN';
+    }
+
     function isSchoolAdmin(schoolId) {
-      return isSuperAdmin() || (
-        hasActiveMembership(schoolId) &&
-        getMembership(schoolId).get('role', '') == 'ADMIN'
-      );
+      return isSuperAdmin() || isSchoolAdminMembership(schoolId);
     }
 
     function isSchoolTeacher(schoolId) {
@@ -197,6 +204,7 @@ service cloud.firestore {
         isNonEmptyId(classId) &&
         exists(/databases/$(database)/documents/teachers/$(tid)) &&
         exists(/databases/$(database)/documents/classes/$(classId)) &&
+        isTeacherDataOwnedByAuth(schoolId, get(/databases/$(database)/documents/teachers/$(tid)).data) &&
         checkTeacherClassAuthData(
           schoolId,
           tid,
@@ -207,7 +215,7 @@ service cloud.firestore {
     }
 
     function isTeacherAuthorizedForClass(schoolId, classId) {
-      return isVerifiedActiveTeacher(schoolId) &&
+      return isSchoolTeacher(schoolId) &&
         isTeacherAuthorizedForClassWithTid(schoolId, resolveMembershipTeacherId(schoolId), classId);
     }
 
@@ -222,7 +230,8 @@ service cloud.firestore {
     }
 
     function checkTeacherReportAuthData(schoolId, tid, classId, subjectId, tData, cData, sData) {
-      return checkTeacherClassAuthData(schoolId, tid, classId, tData, cData) &&
+      return isTeacherDataOwnedByAuth(schoolId, tData) &&
+        checkTeacherClassAuthData(schoolId, tid, classId, tData, cData) &&
         strLower(sData.get('schoolId', '')) == strLower(schoolId) &&
         checkTeacherSubjectAllowed(tData, subjectId, sData);
     }
@@ -246,7 +255,7 @@ service cloud.firestore {
     }
 
     function isTeacherAuthorizedForReport(schoolId, classId, subjectId) {
-      return isVerifiedActiveTeacher(schoolId) &&
+      return isSchoolTeacher(schoolId) &&
         isTeacherAuthorizedForReportWithTid(schoolId, resolveMembershipTeacherId(schoolId), classId, subjectId);
     }
 
@@ -725,7 +734,7 @@ service cloud.firestore {
       );
 
       allow create: if isAuthenticated() && (
-        isSuperAdmin() || (
+        isSuperAdminEmail() || (
           ('schoolId' in request.resource.data) &&
           isValidTenantSchoolId(request.resource.data.schoolId) &&
           isNonEmptyId(request.resource.data.get('studentId', '')) &&
@@ -734,7 +743,7 @@ service cloud.firestore {
           isNonEmptyId(request.resource.data.get('academicSession', '')) &&
           isNonEmptyId(request.resource.data.get('term', '')) && (
             (
-              isSchoolAdmin(request.resource.data.schoolId) &&
+              isSchoolAdminMembership(request.resource.data.schoolId) &&
               isAdminValidReportRefs(
                 request.resource.data.schoolId,
                 request.resource.data.classId,
@@ -763,11 +772,11 @@ service cloud.firestore {
               )
             )
           )
-        )
+        ) || isSuperAdminUserDoc()
       );
 
       allow update: if isAuthenticated() && (
-        isSuperAdmin() || (
+        isSuperAdminEmail() || (
           ('schoolId' in resource.data) &&
           ('schoolId' in request.resource.data) &&
           isValidTenantSchoolId(resource.data.schoolId) &&
@@ -778,7 +787,7 @@ service cloud.firestore {
           request.resource.data.get('academicSession', '') == resource.data.get('academicSession', '') &&
           request.resource.data.get('term', '') == resource.data.get('term', '') && (
             (
-              isSchoolAdmin(resource.data.schoolId) &&
+              isSchoolAdminMembership(resource.data.schoolId) &&
               request.resource.data.get('status', 'DRAFT') in ['DRAFT', 'SUBMITTED', 'APPROVED', 'PUBLISHED']
             ) || (
               isTeacherAuthorizedForReport(
@@ -807,7 +816,7 @@ service cloud.firestore {
               )
             )
           )
-        )
+        ) || isSuperAdminUserDoc()
       );
 
       allow delete: if canDeleteAsSchoolAdmin();
@@ -823,12 +832,11 @@ service cloud.firestore {
     match /evaluations/{evalId} {
       allow get, list: if isAuthenticated() && docMatchesTenant(resource.data);
       allow create: if isAuthenticated() && (
-        isSuperAdmin() || (
+        isSuperAdminEmail() || (
           ('schoolId' in request.resource.data) &&
           isValidTenantSchoolId(request.resource.data.schoolId) &&
           isNonEmptyId(request.resource.data.get('studentId', '')) && (
-            isSchoolAdmin(request.resource.data.schoolId) || (
-              isVerifiedActiveTeacher(request.resource.data.schoolId) &&
+            isSchoolAdminMembership(request.resource.data.schoolId) || (
               isTeacherAuthorizedForClass(
                 request.resource.data.schoolId,
                 request.resource.data.get('classId', '')
@@ -836,17 +844,16 @@ service cloud.firestore {
               !('principalRemark' in request.resource.data)
             )
           )
-        )
+        ) || isSuperAdminUserDoc()
       );
       allow update: if isAuthenticated() && (
-        isSuperAdmin() || (
+        isSuperAdminEmail() || (
           ('schoolId' in resource.data) &&
           ('schoolId' in request.resource.data) &&
           isValidTenantSchoolId(resource.data.schoolId) &&
           request.resource.data.schoolId == resource.data.schoolId &&
           request.resource.data.get('studentId', '') == resource.data.get('studentId', '') && (
-            isSchoolAdmin(resource.data.schoolId) || (
-              isVerifiedActiveTeacher(resource.data.schoolId) &&
+            isSchoolAdminMembership(resource.data.schoolId) || (
               isTeacherAuthorizedForClass(
                 resource.data.schoolId,
                 request.resource.data.get('classId', resource.data.get('classId', ''))
@@ -854,7 +861,7 @@ service cloud.firestore {
               request.resource.data.get('principalRemark', '') == resource.data.get('principalRemark', '')
             )
           )
-        )
+        ) || isSuperAdminUserDoc()
       );
       allow delete: if canDeleteAsSchoolAdmin();
     }

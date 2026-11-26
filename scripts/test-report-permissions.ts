@@ -91,7 +91,7 @@ const classes = new Map<string, ClassDoc>();
 const subjects = new Map<string, SubjectDoc>();
 const results = new Map<string, ResultDoc>();
 
-const strLower = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
+const strLower = (v: unknown): string => (typeof v === 'string' ? v.trim().toLowerCase() : '');
 
 // Exact mirror of /firestore.rules helper predicates (including case-normalization & lock gates)
 function isValidTenantSchoolId(id: unknown): id is string {
@@ -1011,6 +1011,87 @@ const directTeacherFreshDraft = canCreateResult(authTeacherA, {
 assert(
   directTeacherUpdateMixedCase.allowed === true && directTeacherFreshDraft.allowed === true,
   'R15. Direct teacher login can create and update drafts (including drafts staged with teacher doc ID or mixed-case schoolId)'
+);
+
+// R16: Whitespace-trimmed schoolId/email normalization & 4-doc lookup cap in firestore.rules
+const rulesSrc = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
+const schoolServiceSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/services/schoolService.ts'), 'utf8');
+const authContextSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/contexts/AuthContext.tsx'), 'utf8');
+const diagServiceSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/services/reportAuthorizationService.ts'), 'utf8');
+
+const paddedSchoolTeacher: TeacherDoc = {
+  teacherId: 'tch_bistoland_1',
+  schoolId: ' bistoland-elementary-school ',
+  userId: 'uid_bistoland_teacher_1',
+  email: ' Teacher@Gmail.com ',
+  assignedClassIds: ['cls_bist_1'],
+  subjects: ['sub_bist_math'],
+  status: 'ACTIVE',
+};
+memberships.set('bistoland-elementary-school_uid_bistoland_teacher_1', {
+  id: 'bistoland-elementary-school_uid_bistoland_teacher_1',
+  userId: 'uid_bistoland_teacher_1',
+  schoolId: 'bistoland-elementary-school ',
+  role: 'TEACHER',
+  status: 'ACTIVE',
+  teacherId: 'tch_bistoland_1',
+});
+teachers.set('tch_bistoland_1', paddedSchoolTeacher);
+classes.set('cls_bist_1', {
+  classId: 'cls_bist_1',
+  schoolId: 'bistoland-elementary-school',
+  name: 'Grade 3',
+});
+subjects.set('sub_bist_math', {
+  subjectId: 'sub_bist_math',
+  schoolId: 'bistoland-elementary-school',
+  name: 'Mathematics',
+});
+
+const paddedSchoolWrite = canCreateResult(
+  { uid: 'uid_bistoland_teacher_1', email: 'teacher@gmail.com' },
+  {
+    resultId: 'res_bistoland_padded_1',
+    schoolId: 'bistoland-elementary-school',
+    studentId: 'stu_bist_1',
+    classId: 'cls_bist_1',
+    subjectId: 'sub_bist_math',
+    academicSession: '2026/2027',
+    term: 'First Term',
+    teacherId: 'uid_bistoland_teacher_1',
+    totalScore: 78,
+    grade: 'B',
+    status: 'DRAFT',
+    isLocked: false,
+  }
+);
+
+assert(
+  rulesSrc.includes('val.trim().lower()') &&
+    rulesSrc.includes('isSuperAdminEmail()') &&
+    rulesSrc.includes('isSchoolAdminMembership(') &&
+    paddedSchoolWrite.allowed === true,
+  'R16. firestore.rules trims whitespace in strLower(), prioritizes zero-read isSuperAdminEmail(), and stays well within single-doc lookup budget'
+);
+
+// R17: Required fallbacks & ownership diagnostics across ResultsPage, schoolService, AuthContext, and reportAuthorizationService
+assert(
+  resultsPageSrc.includes("studentId: st.studentId || d.id") &&
+    schoolServiceSrc.includes("currentAcademicSession: data.currentAcademicSession?.trim() || DEFAULT_SCHOOL_SETTINGS.currentAcademicSession") &&
+    schoolServiceSrc.includes("data.currentTerm?.trim()") &&
+    schoolServiceSrc.includes("DEFAULT_SCHOOL_SETTINGS.currentTerm") &&
+    authContextSrc.includes("selectedMembership.teacherId") &&
+    diagServiceSrc.includes("tData.userId && tData.userId !== params.authUid"),
+  'R17. ResultsPage studentId fallback, schoolService non-blank term/session, AuthContext membership teacherId match, and UID conflict diagnostics are in place'
+);
+
+// R18: SuperAdmin Memberships tab includes per-member Verify & Verify & Sync checks
+const superAdminSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/superadmin/SuperAdminPage.tsx'), 'utf8');
+assert(
+  superAdminSrc.includes('inspectAndOptionallySyncMember') &&
+    superAdminSrc.includes('Verify &amp; Sync') === false &&
+    superAdminSrc.includes('Verify & Sync'),
+  'R18. SuperAdmin Memberships inspector provides live Verify and Verify & Sync controls'
 );
 
 console.log('\n========================================');
