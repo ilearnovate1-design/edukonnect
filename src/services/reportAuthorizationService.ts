@@ -1,4 +1,4 @@
-import { doc, getDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { db } from './firebase';
 import {
   Result,
@@ -569,6 +569,8 @@ export async function verifyAndEvaluateReportAuthorization(
   > & {
     cachedMembership?: SchoolMembership | null;
     cachedTeacher?: Teacher | null;
+    term?: string;
+    academicSession?: string;
     targetResults?: TargetResultCheckItem[];
   }
 ): Promise<{
@@ -664,12 +666,25 @@ export async function verifyAndEvaluateReportAuthorization(
         liveClass = { ...(cSnap.data() as SchoolClass), classId: cSnap.id };
       } catch (err) {
         console.warn('[ReportAuthDiagnostic] Live class path check failed:', err);
+        let idMismatch = false;
+        try {
+          const cListSnap = await getDocs(
+            query(collection(db, 'classes'), where('schoolId', '==', schoolId))
+          );
+          idMismatch = cListSnap.docs.some(
+            (d) => (d.data() as any).classId === input.selectedClass?.classId && d.id !== input.selectedClass?.classId
+          );
+        } catch {
+          // ignore secondary diagnostic query failure
+        }
         return {
           evaluation: buildEarlyFail(
             'E',
-            'SCHOOL_ID_MISMATCH',
-            'You do not have permission to access the selected class record.',
-            `Condition E failed: reading /classes/${input.selectedClass.classId} was denied.`
+            idMismatch ? 'CLASS_ASSIGNMENT_MISSING' : 'SCHOOL_ID_MISMATCH',
+            idMismatch
+              ? 'The selected class record could not be verified at its database path. Please ask your administrator to re-save the class in Classes Management.'
+              : 'You do not have permission to access the selected class record.',
+            `Condition E failed: reading /classes/${input.selectedClass.classId} failed (idMismatch=${idMismatch}).`
           ),
           liveMembership,
           liveTeacher,
@@ -699,12 +714,25 @@ export async function verifyAndEvaluateReportAuthorization(
         liveSubject = { ...(sSnap.data() as Subject), subjectId: sSnap.id };
       } catch (err) {
         console.warn('[ReportAuthDiagnostic] Live subject path check failed:', err);
+        let idMismatch = false;
+        try {
+          const sListSnap = await getDocs(
+            query(collection(db, 'subjects'), where('schoolId', '==', schoolId))
+          );
+          idMismatch = sListSnap.docs.some(
+            (d) => (d.data() as any).subjectId === input.selectedSubject?.subjectId && d.id !== input.selectedSubject?.subjectId
+          );
+        } catch {
+          // ignore secondary diagnostic query failure
+        }
         return {
           evaluation: buildEarlyFail(
             'E',
-            'SCHOOL_ID_MISMATCH',
-            'You do not have permission to access the selected subject record.',
-            `Condition E failed: reading /subjects/${input.selectedSubject.subjectId} was denied.`
+            idMismatch ? 'SUBJECT_ASSIGNMENT_MISSING' : 'SCHOOL_ID_MISMATCH',
+            idMismatch
+              ? 'The selected subject record could not be verified at its database path. Please ask your administrator to re-save the subject in Subjects Management.'
+              : 'You do not have permission to access the selected subject record.',
+            `Condition E failed: reading /subjects/${input.selectedSubject.subjectId} failed (idMismatch=${idMismatch}).`
           ),
           liveMembership,
           liveTeacher,
@@ -740,94 +768,65 @@ export async function verifyAndEvaluateReportAuthorization(
     return { evaluation, liveMembership, liveTeacher, resolvedResultIds, liveExistingResultsMap };
   }
 
-  // 5. Target /results/{resultId} pre-flight collision & server lock inspection
-  if (!input.isSuperAdmin && input.targetResults && input.targetResults.length > 0) {
+  // 5. Target /results/{resultId} pre-flight server state & lock inspection via scoped list query
+  // (Never calls getDoc on non-existent /results IDs because Firestore allow get requires resource.data)
+  if (!input.isSuperAdmin && input.targetResults && input.targetResults.length > 0 && liveClass && liveSubject) {
     const resolvedTid = (liveMembership?.teacherId || liveUserTeacherId || '').trim();
-    let collisionError: ReportAuthorizationEvaluation | null = null;
+    const serverByStudent = new Map<string, Partial<Result> & { locked?: boolean }>();
+    const serverByDocId = new Map<string, Partial<Result> & { locked?: boolean }>();
+
+    try {
+      const constraints = [
+        where('schoolId', '==', schoolId),
+        where('classId', '==', liveClass.classId),
+        where('subjectId', '==', liveSubject.subjectId),
+      ];
+      if (input.term) {
+        constraints.push(where('term', '==', input.term));
+      }
+      if (input.academicSession) {
+        constraints.push(where('academicSession', '==', input.academicSession));
+      }
+
+      const rSnap = await getDocs(query(collection(db, 'results'), ...constraints));
+      rSnap.forEach((d) => {
+        const data = { ...(d.data() as Partial<Result> & { locked?: boolean }), resultId: d.id };
+        serverByDocId.set(d.id, data);
+        if (data.studentId) {
+          serverByStudent.set(data.studentId, data);
+        }
+      });
+    } catch (queryErr) {
+      console.warn('[ReportAuthDiagnostic] Scoped results pre-flight query failed:', queryErr);
+    }
+
     let totalCheckedRows = 0;
     let unlockedTargetCount = 0;
     let firstServerLockReason = '';
 
-    await Promise.all(
-      input.targetResults.map(async (item) => {
-        totalCheckedRows++;
-        let chosenId = item.targetResultId;
+    for (const item of input.targetResults) {
+      totalCheckedRows++;
+      const existingData =
+        serverByDocId.get(item.targetResultId) || serverByStudent.get(item.studentId);
+      const chosenId = existingData?.resultId || item.targetResultId;
+      resolvedResultIds.set(item.studentId, chosenId);
 
-        const inspectDocId = async (docId: string) => {
-          try {
-            const snap = await getDoc(doc(db, 'results', docId));
-            return { denied: false as const, snap };
-          } catch {
-            return { denied: true as const, snap: null };
-          }
-        };
-
-        let probe = await inspectDocId(chosenId);
-        const needsReroute =
-          probe.denied ||
-          (probe.snap?.exists() &&
-            (normalizeId((probe.snap.data() as any).schoolId) !== schoolId ||
-              (liveClass && (probe.snap.data() as any).classId !== liveClass.classId)));
-
-        if (needsReroute) {
-          if (!item.hasOriginal && item.classScopedResultId && item.classScopedResultId !== chosenId) {
-            chosenId = item.classScopedResultId;
-            probe = await inspectDocId(chosenId);
-            const stillConflict =
-              probe.denied ||
-              (probe.snap?.exists() &&
-                (normalizeId((probe.snap.data() as any).schoolId) !== schoolId ||
-                  (liveClass && (probe.snap.data() as any).classId !== liveClass.classId)));
-            if (stillConflict && !collisionError) {
-              collisionError = buildEarlyFail(
-                'D',
-                'SCHOOL_ID_MISMATCH',
-                'A conflicting report record exists for another school or class. Please refresh and try again.',
-                `Condition D failed: re-routed target /results/${chosenId} collided with another school/class.`
-              );
-              return;
-            }
-          } else if (!collisionError) {
-            collisionError = buildEarlyFail(
-              'D',
-              'SCHOOL_ID_MISMATCH',
-              'This report record conflicts with an entry belonging to another school or class.',
-              `Condition D failed: /results/${chosenId} access denied or belongs to another school/class.`
-            );
-            return;
-          }
-        }
-
-        resolvedResultIds.set(item.studentId, chosenId);
-
-        if (probe.snap?.exists()) {
-          const existingData = probe.snap.data() as Partial<Result> & { locked?: boolean };
-          liveExistingResultsMap.set(item.studentId, existingData);
-          const lockStatus = isResultRecordLocked(
-            existingData,
-            input.authUid,
-            resolvedTid || null,
-            input.isAtLeastAdmin
-          );
-          if (!lockStatus.locked) {
-            unlockedTargetCount++;
-          } else if (!firstServerLockReason) {
-            firstServerLockReason = lockStatus.reason || 'Report record is locked.';
-          }
-        } else {
+      if (existingData) {
+        liveExistingResultsMap.set(item.studentId, existingData);
+        const lockStatus = isResultRecordLocked(
+          existingData,
+          input.authUid,
+          resolvedTid || null,
+          input.isAtLeastAdmin
+        );
+        if (!lockStatus.locked) {
           unlockedTargetCount++;
+        } else if (!firstServerLockReason) {
+          firstServerLockReason = lockStatus.reason || 'Report record is locked.';
         }
-      })
-    );
-
-    if (collisionError) {
-      return {
-        evaluation: collisionError,
-        liveMembership,
-        liveTeacher,
-        resolvedResultIds,
-        liveExistingResultsMap,
-      };
+      } else {
+        unlockedTargetCount++;
+      }
     }
 
     if (totalCheckedRows > 0 && unlockedTargetCount === 0) {
@@ -991,35 +990,23 @@ export async function diagnoseReportRuleDenial(params: {
         );
       }
 
-      for (const rId of params.targetResultIds.slice(0, 5)) {
-        try {
-          const rSnap = await getDoc(doc(db, 'results', rId));
-          if (rSnap.exists()) {
-            const rData = rSnap.data() as Partial<Result> & { locked?: boolean };
-            if (normalizeId(rData.schoolId) !== schoolId) {
-              return wrap(
-                'SCHOOL_ID_MISMATCH',
-                'A conflicting report record exists for another school.'
-              );
-            }
-            if (rData.classId !== params.classId || rData.subjectId !== params.subjectId) {
-              return wrap(
-                'SCHOOL_ID_MISMATCH',
-                'A conflicting report record exists for a different class or subject.'
-              );
-            }
-            const lockCheck = isResultRecordLocked(rData, params.authUid, tid, false);
-            if (lockCheck.locked) {
-              return wrap(
-                'REPORT_LOCKED',
-                'One or more target student reports are already approved, published, locked, or owned by another teacher.'
-              );
-            }
-          }
-        } catch {
+      const existingDocsSnap = await getDocs(
+        query(
+          collection(db, 'results'),
+          where('schoolId', '==', schoolId),
+          where('classId', '==', params.classId),
+          where('subjectId', '==', params.subjectId)
+        )
+      );
+      const targetIdSet = new Set(params.targetResultIds);
+      for (const rDoc of existingDocsSnap.docs) {
+        if (!targetIdSet.has(rDoc.id)) continue;
+        const rData = rDoc.data() as Partial<Result> & { locked?: boolean };
+        const lockCheck = isResultRecordLocked(rData, params.authUid, tid, false);
+        if (lockCheck.locked) {
           return wrap(
-            'SCHOOL_ID_MISMATCH',
-            'One of the target report IDs conflicts with a record belonging to another school.'
+            'REPORT_LOCKED',
+            'One or more target student reports are already approved, published, locked, or owned by another teacher.'
           );
         }
       }

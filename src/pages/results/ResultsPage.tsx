@@ -466,6 +466,8 @@ export const ResultsPage: React.FC = () => {
       cachedTeacher: currentTeacher,
       selectedClass,
       selectedSubject,
+      term: selectedTerm,
+      academicSession: selectedSession,
       targetStatus: statusToSet,
       existingResults: existingRows,
       targetResults,
